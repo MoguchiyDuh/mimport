@@ -1,0 +1,32 @@
+[workspace]
+resolver = "3"
+members = ["crates/mimport-core", "crates/mimport"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+
+[workspace.dependencies]
+reqwest = { version = "0.13", default-features = false, features = [
+    "blocking",
+    "json",
+    "rustls",
+    "webpki-roots",
+    "charset",
+    "http2",
+    "query",
+] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+toml = "0.9"
+rusqlite = { version = "0.37", features = ["bundled"] }
+lofty = "0.24"
+symphonia = { version = "0.6", default-features = false, features = [
+    "flac",
+    "isomp4",
+    "ogg",
+] }
+clap = { version = "4", features = ["derive"] }
+tracing = "0.1"
+tracing-subscriber = "0.3"
+thiserror = "2"

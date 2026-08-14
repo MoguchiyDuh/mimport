@@ -1,0 +1,120 @@
+//! `config.toml` schema. Fresh design, not carried over from the VPS reference build —
+//! per-backend sections reflect the mb/lidarr split decided in DESIGN.md §5.
+
+use std::path::{Path, PathBuf};
+
+use serde::Deserialize;
+
+use crate::error::{Error, Result};
+
+#[derive(Debug, Deserialize)]
+pub struct Config {
+    pub paths: PathsConfig,
+    pub musicbrainz: MbConfig,
+    pub lidarr: LidarrConfig,
+    pub slskd: SlskdConfig,
+    pub quality: QualityConfig,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct PathsConfig {
+    /// The Navidrome-visible library tree. `import` copies into here.
+    pub library: PathBuf,
+    /// slskd's download landing dir.
+    pub downloads: PathBuf,
+    /// Working area for postfix/import between download and library placement.
+    pub staging: PathBuf,
+    /// SQLite jobs/library-index DB.
+    pub database: PathBuf,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct MbConfig {
+    #[serde(default = "default_mb_base_url")]
+    pub base_url: String,
+    /// MB requires a meaningful UA or returns 503 — confirmed live.
+    pub user_agent: String,
+    /// MB's own X-RateLimit-* headers are real/decrementing (confirmed live, ~1200/hr
+    /// default), unlike the lidarr proxy's. Self-paced floor as a courtesy/backstop.
+    #[serde(default = "default_mb_rate_limit")]
+    pub rate_limit_per_sec: f64,
+    pub cache_dir: PathBuf,
+    #[serde(default = "default_cache_ttl_secs")]
+    pub cache_ttl_secs: u64,
+    #[serde(default = "default_max_retries")]
+    pub max_retries: u32,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct LidarrConfig {
+    #[serde(default = "default_lidarr_base_url")]
+    pub base_url: String,
+    pub cache_dir: PathBuf,
+    #[serde(default = "default_cache_ttl_secs")]
+    pub cache_ttl_secs: u64,
+    #[serde(default = "default_max_retries")]
+    pub max_retries: u32,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SlskdConfig {
+    /// TODO: auth model unresearched (see phase 1 gap list) — likely an API key header,
+    /// confirm against a live slskd instance before implementing the client.
+    pub url: String,
+    #[serde(default = "default_slskd_search_timeout")]
+    pub search_timeout_secs: u64,
+    #[serde(default = "default_slskd_request_timeout")]
+    pub request_timeout_secs: u64,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct QualityConfig {
+    #[serde(default = "default_samplerate")]
+    pub target_samplerate: u32,
+    #[serde(default = "default_bitdepth")]
+    pub target_bitdepth: u16,
+}
+
+fn default_mb_base_url() -> String {
+    return "https://musicbrainz.org/ws/2".to_string();
+}
+fn default_lidarr_base_url() -> String {
+    return "https://api.lidarr.audio/api/v0.4".to_string();
+}
+fn default_mb_rate_limit() -> f64 {
+    return 1.0;
+}
+fn default_cache_ttl_secs() -> u64 {
+    return 2_592_000; // 30 days
+}
+fn default_max_retries() -> u32 {
+    return 5;
+}
+fn default_slskd_search_timeout() -> u64 {
+    return 60;
+}
+fn default_slskd_request_timeout() -> u64 {
+    return 30;
+}
+fn default_samplerate() -> u32 {
+    return 44_100;
+}
+fn default_bitdepth() -> u16 {
+    return 16;
+}
+
+impl Config {
+    pub fn load(path: impl AsRef<Path>) -> Result<Self> {
+        let path = path.as_ref();
+        let text = std::fs::read_to_string(path).map_err(|e| return Error::io(path, e))?;
+        let cfg: Config = toml::from_str(&text).map_err(|e| return Error::Config(e.to_string()))?;
+        if cfg.musicbrainz.user_agent.trim().is_empty()
+            || cfg.musicbrainz.user_agent.contains("CHANGE_ME")
+        {
+            return Err(Error::MbUserAgentUnset {
+                value: cfg.musicbrainz.user_agent,
+            });
+        }
+        return Ok(cfg);
+    }
+}
