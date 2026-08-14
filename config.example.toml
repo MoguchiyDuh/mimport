@@ -1,0 +1,17 @@
+[paths]
+library   = "/tmp/mimport-dev/library"
+downloads = "/tmp/mimport-dev/downloads"
+staging   = "/tmp/mimport-dev/staging"
+database  = "/tmp/mimport-dev/mimport.db"
+
+[musicbrainz]
+user_agent = "mimport-dev/0.1.0 ( kirill@localhost )"
+cache_dir = "/tmp/mimport-dev/cache/mb"
+
+[lidarr]
+cache_dir = "/tmp/mimport-dev/cache/lidarr"
+
+[slskd]
+url = "http://127.0.0.1:8111"
+
+[quality]

@@ -1,0 +1,16 @@
+[package]
+name = "mimport"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "mimport"
+path = "src/main.rs"
+
+[dependencies]
+mimport-core = { path = "../mimport-core" }
+clap.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
