@@ -163,12 +163,15 @@ fn run_slskd(cli: &Cli, cfg: &Config, cmd: &SlskdCmd) -> mimport_core::Result<()
             output::print(&status, cli.json);
         }
         SlskdCmd::Fetch {
+            search_id,
             username,
+            directory,
             filename,
-            size,
         } => {
-            let transfer = slskd_q::fetch_and_wait(&client, &cfg.slskd, username, filename, *size)?;
-            output::print(&transfer, cli.json);
+            let search = slskd_q::search_status(&client, search_id)?;
+            let files = slskd_q::resolve_selector(&search, username, directory, filename.as_deref())?;
+            let transfers = slskd_q::fetch_and_wait(&client, &cfg.slskd, username, &files)?;
+            output::print(&transfers, cli.json);
         }
         SlskdCmd::Status { username, id } => {
             let transfer = slskd_q::transfer_status(&client, username, id)?;

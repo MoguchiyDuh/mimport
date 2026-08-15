@@ -64,6 +64,9 @@ pub enum Error {
         last_state: String,
     },
 
+    #[error("slskd fetch selector matched no {what}: {detail}")]
+    SlskdSelectorNotFound { what: &'static str, detail: String },
+
     #[error("http transport error: {0}")]
     Http(#[from] reqwest::Error),
 
