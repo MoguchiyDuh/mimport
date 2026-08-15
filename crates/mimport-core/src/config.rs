@@ -58,11 +58,23 @@ pub struct LidarrConfig {
 
 #[derive(Debug, Deserialize)]
 pub struct SlskdConfig {
-    /// TODO: auth model unresearched (see phase 1 gap list) — likely an API key header,
-    /// confirm against a live slskd instance before implementing the client.
-    pub url: String,
-    #[serde(default = "default_slskd_search_timeout")]
-    pub search_timeout_secs: u64,
+    /// Loopback — mimport is deployed onto the same host as the slskd container
+    /// (confirmed live 2026-08-14: JWT-via-login auth, no API key on this instance).
+    #[serde(default = "default_slskd_base_url")]
+    pub base_url: String,
+    pub username: String,
+    pub password: String,
+    /// `search` deliberately has no timeout knob — it never sends `searchTimeout` to
+    /// the API, so slskd's own server-side default applies untouched.
+    ///
+    /// `fetch` is the one command that owns a timeout: how long mimport waits for an
+    /// enqueued transfer to finish before giving up (the transfer itself keeps running
+    /// on slskd regardless). `timeout = fetch_timeout_base_secs + (size_mb *
+    /// fetch_timeout_per_mb_secs)`.
+    #[serde(default = "default_fetch_timeout_base_secs")]
+    pub fetch_timeout_base_secs: u64,
+    #[serde(default = "default_fetch_timeout_per_mb_secs")]
+    pub fetch_timeout_per_mb_secs: f64,
     #[serde(default = "default_slskd_request_timeout")]
     pub request_timeout_secs: u64,
 }
@@ -90,8 +102,14 @@ fn default_cache_ttl_secs() -> u64 {
 fn default_max_retries() -> u32 {
     return 5;
 }
-fn default_slskd_search_timeout() -> u64 {
-    return 60;
+fn default_slskd_base_url() -> String {
+    return "http://127.0.0.1:8111".to_string();
+}
+fn default_fetch_timeout_base_secs() -> u64 {
+    return 30;
+}
+fn default_fetch_timeout_per_mb_secs() -> f64 {
+    return 1.0;
 }
 fn default_slskd_request_timeout() -> u64 {
     return 30;

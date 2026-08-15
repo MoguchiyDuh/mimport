@@ -6,9 +6,10 @@ use mimport_core::error::Error;
 use mimport_core::lidarr::{queries as lidarr_q, LidarrClient};
 use mimport_core::mb::{queries as mb_q, MbClient};
 use mimport_core::release::NormalizedRelease;
+use mimport_core::slskd::{queries as slskd_q, SlskdClient};
 use mimport_core::Config;
 
-use cli::{Cli, Command, LidarrCmd, MbCmd};
+use cli::{Cli, Command, LidarrCmd, MbCmd, SlskdCmd};
 
 fn main() {
     tracing_subscriber::fmt().with_target(false).init();
@@ -32,9 +33,7 @@ fn run(cli: &Cli) -> mimport_core::Result<()> {
     match &cli.command {
         Command::Lidarr(cmd) => run_lidarr(cli, &cfg, cmd),
         Command::Mb(cmd) => run_mb(cli, &cfg, cmd),
-        Command::Slskd(_) => Err(Error::NotImplemented(
-            "slskd family — API unresearched, see phase 1 gap list",
-        )),
+        Command::Slskd(cmd) => run_slskd(cli, &cfg, cmd),
         Command::Postfix { .. } => Err(Error::NotImplemented("postfix")),
         Command::Import { .. } => Err(Error::NotImplemented("import")),
     }
@@ -111,6 +110,45 @@ fn run_mb(cli: &Cli, cfg: &Config, cmd: &MbCmd) -> mimport_core::Result<()> {
         MbCmd::Track { text } => {
             let results = mb_q::search_recordings(&client, text)?;
             output::print(&results, cli.json);
+        }
+    }
+    return Ok(());
+}
+
+fn run_slskd(cli: &Cli, cfg: &Config, cmd: &SlskdCmd) -> mimport_core::Result<()> {
+    let client = SlskdClient::new(&cfg.slskd)?;
+    match cmd {
+        SlskdCmd::Search { query } => {
+            let results = slskd_q::search(&client, query)?;
+            output::print(&results, cli.json);
+        }
+        SlskdCmd::SearchStatus { id } => {
+            let status = slskd_q::search_status(&client, id)?;
+            output::print(&status, cli.json);
+        }
+        SlskdCmd::Fetch {
+            username,
+            filename,
+            size,
+        } => {
+            let transfer = slskd_q::fetch_and_wait(&client, &cfg.slskd, username, filename, *size)?;
+            output::print(&transfer, cli.json);
+        }
+        SlskdCmd::Status { username, id } => {
+            let transfer = slskd_q::transfer_status(&client, username, id)?;
+            output::print(&transfer, cli.json);
+        }
+        SlskdCmd::Cancel {
+            username,
+            id,
+            remove,
+        } => {
+            slskd_q::cancel_transfer(&client, username, id, *remove)?;
+            output::print(&serde_json::json!({"cancelled": true}), cli.json);
+        }
+        SlskdCmd::Browse { username, directory } => {
+            let dirs = slskd_q::browse_directory(&client, username, directory)?;
+            output::print(&dirs, cli.json);
         }
     }
     return Ok(());

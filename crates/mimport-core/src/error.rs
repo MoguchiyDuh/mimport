@@ -45,6 +45,27 @@ pub enum Error {
     #[error("lidarr proxy is still failing after {attempts} attempts")]
     LidarrUnavailable { attempts: u32 },
 
+    #[error("slskd {what} failed: HTTP {status}\n{body}")]
+    Slskd {
+        what: &'static str,
+        status: u16,
+        body: String,
+    },
+
+    #[error("slskd login failed: HTTP {status}\n{body}")]
+    SlskdAuth { status: u16, body: String },
+
+    #[error("slskd has no user or peer resource at {what} (peer likely offline)")]
+    SlskdNotFound { what: String },
+
+    #[error("slskd transfer {username}/{id} timed out waiting for completion after {waited_secs}s (last state: {last_state})")]
+    SlskdFetchTimeout {
+        username: String,
+        id: String,
+        waited_secs: u64,
+        last_state: String,
+    },
+
     #[error("http transport error: {0}")]
     Http(#[from] reqwest::Error),
 

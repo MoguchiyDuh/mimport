@@ -75,17 +75,51 @@ pub enum MbCmd {
 
 #[derive(Subcommand)]
 pub enum SlskdCmd {
-    Search {
-        release_mbid: String,
-        #[arg(long)]
-        fresh: bool,
-    },
+    /// Raw Soulseek text query. Blocks until slskd's own search completes — mimport
+    /// never sends a `searchTimeout`, so there's no `--timeout` flag here on purpose.
+    ///
+    /// First cut: takes free text directly, not a release mbid. DESIGN.md §5's
+    /// mbid-driven flow (release mbid -> generated query -> search id stashed
+    /// somewhere) needs the jobs DB (not built yet) to link a search back to a
+    /// release/job, so it's layered on top of this primitive later.
+    Search { query: String },
+
+    /// Poll an in-flight search's state/results by id (returned by `search`).
+    SearchStatus { id: String },
+
+    /// Enqueue one file from `username` and wait for it to finish, up to a timeout
+    /// scaled by file size (`[slskd] fetch_timeout_base_secs` +
+    /// `fetch_timeout_per_mb_secs * size_mb`). The transfer itself keeps running on
+    /// slskd even if this times out — check with `status` afterward.
+    ///
+    /// First cut: single file by exact filename+size (as returned by `search`'s
+    /// results), not the `<search-id> <selector>` multi-file shape from DESIGN.md §5
+    /// — that needs somewhere to cache recent search results to resolve a selector
+    /// index back to filenames, which doesn't exist yet (jobs DB).
     Fetch {
-        search_id: String,
         username: String,
-        /// omitted = whole dir/user; `10` = index; `1,3,5` = list; `1-3` = range.
-        selector: Option<String>,
+        filename: String,
+        size: i64,
     },
-    /// job-id, path, or title.
-    Status { target: String },
+
+    /// Poll one transfer's state without waiting.
+    Status { username: String, id: String },
+
+    /// Cancel an in-progress transfer.
+    Cancel {
+        username: String,
+        id: String,
+        /// Also drop the transfer record server-side, not just stop it.
+        #[arg(long)]
+        remove: bool,
+    },
+
+    /// List one directory's contents for a user (`POST /directory`) — the per-folder
+    /// browse primitive, not a full recursive tree (decided 2026-08-14).
+    Browse {
+        username: String,
+        /// Omit for the user's share root.
+        #[arg(default_value = "")]
+        directory: String,
+    },
 }
