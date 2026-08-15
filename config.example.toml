@@ -12,6 +12,8 @@ cache_dir = "/tmp/mimport-dev/cache/mb"
 cache_dir = "/tmp/mimport-dev/cache/lidarr"
 
 [slskd]
-url = "http://127.0.0.1:8111"
+base_url = "http://127.0.0.1:8111"
+username = "CHANGE_ME"
+password = "CHANGE_ME"
 
 [quality]
