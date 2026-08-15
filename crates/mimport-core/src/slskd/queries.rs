@@ -6,7 +6,7 @@ use crate::error::{Error, Result};
 use super::client::SlskdClient;
 use super::types::{
     Directory, DirectoryContentsRequest, EnqueueResult, QueueDownloadRequestItem, Search,
-    SearchRequest, Transfer,
+    SearchRequest, SlskdFile, Transfer,
 };
 
 const SEARCH_REQUEST_TIMEOUT: Duration = Duration::from_secs(600);
@@ -30,18 +30,70 @@ pub fn search_status(client: &SlskdClient, id: &str) -> Result<Search> {
     return client.get(&path);
 }
 
-pub fn enqueue_download(
+pub fn enqueue_downloads(
     client: &SlskdClient,
     username: &str,
-    filename: &str,
-    size: i64,
+    items: &[QueueDownloadRequestItem],
 ) -> Result<EnqueueResult> {
     let path = format!("/api/v0/transfers/downloads/{}", urlencode(username));
-    let body = vec![QueueDownloadRequestItem {
-        filename: filename.to_string(),
-        size,
-    }];
-    return client.post(&path, &body);
+    return client.post(&path, &items);
+}
+
+/// Splits a Soulseek remote path (`\`-separated) into (directory, basename).
+pub fn split_remote_path(path: &str) -> (&str, &str) {
+    return match path.rfind('\\') {
+        Some(i) => (&path[..i], &path[i + 1..]),
+        None => ("", path),
+    };
+}
+
+/// Resolves a `<username> <directory> [<filename>]` selector against an
+/// already-fetched `Search`'s responses. `directory` must match exactly as
+/// it appears in the search result's file paths.
+pub fn resolve_selector<'a>(
+    search: &'a Search,
+    username: &str,
+    directory: &str,
+    filename: Option<&str>,
+) -> Result<Vec<&'a SlskdFile>> {
+    let response = search
+        .responses
+        .iter()
+        .find(|r| return r.username == username)
+        .ok_or_else(|| {
+            return Error::SlskdSelectorNotFound {
+                what: "peer",
+                detail: format!("no response from {username} in search {}", search.id),
+            };
+        })?;
+
+    let in_dir: Vec<&SlskdFile> = response
+        .files
+        .iter()
+        .filter(|f| return split_remote_path(&f.filename).0 == directory)
+        .collect();
+    if in_dir.is_empty() {
+        return Err(Error::SlskdSelectorNotFound {
+            what: "directory",
+            detail: format!("{username} has no files under {directory:?}"),
+        });
+    }
+
+    let Some(filename) = filename else {
+        return Ok(in_dir);
+    };
+
+    let matched: Vec<&SlskdFile> = in_dir
+        .into_iter()
+        .filter(|f| return split_remote_path(&f.filename).1 == filename)
+        .collect();
+    if matched.is_empty() {
+        return Err(Error::SlskdSelectorNotFound {
+            what: "file",
+            detail: format!("{username}: {directory}\\{filename}"),
+        });
+    }
+    return Ok(matched);
 }
 
 pub fn transfer_status(client: &SlskdClient, username: &str, id: &str) -> Result<Transfer> {
@@ -88,39 +140,50 @@ pub fn fetch_and_wait(
     client: &SlskdClient,
     cfg: &SlskdConfig,
     username: &str,
-    filename: &str,
-    size: i64,
-) -> Result<Transfer> {
-    let enqueued = enqueue_download(client, username, filename, size)?;
-    let id = enqueued
-        .enqueued
-        .first()
-        .map(|t| return t.id.clone())
-        .ok_or_else(|| {
-            return Error::Slskd {
-                what: "enqueue",
-                status: 0,
-                body: format!("no transfer returned in enqueued[] (failed: {:?})", enqueued.failed),
+    files: &[&SlskdFile],
+) -> Result<Vec<Transfer>> {
+    let items: Vec<QueueDownloadRequestItem> = files
+        .iter()
+        .map(|f| {
+            return QueueDownloadRequestItem {
+                filename: f.filename.clone(),
+                size: f.size,
             };
-        })?;
-
-    let deadline = Instant::now() + fetch_wait_timeout(cfg, size);
-
-    loop {
-        let transfer = transfer_status(client, username, &id)?;
-        if is_terminal_state(&transfer.state) {
-            return Ok(transfer);
-        }
-        if Instant::now() >= deadline {
-            return Err(Error::SlskdFetchTimeout {
-                username: username.to_string(),
-                id,
-                waited_secs: fetch_wait_timeout(cfg, size).as_secs(),
-                last_state: transfer.state,
-            });
-        }
-        std::thread::sleep(POLL_INTERVAL);
+        })
+        .collect();
+    let enqueued = enqueue_downloads(client, username, &items)?;
+    if enqueued.enqueued.is_empty() {
+        return Err(Error::Slskd {
+            what: "enqueue",
+            status: 0,
+            body: format!("no transfers returned in enqueued[] (failed: {:?})", enqueued.failed),
+        });
     }
+
+    let total_size: i64 = files.iter().map(|f| return f.size).sum();
+    let timeout = fetch_wait_timeout(cfg, total_size);
+    let deadline = Instant::now() + timeout;
+
+    let mut results = Vec::with_capacity(enqueued.enqueued.len());
+    for t in &enqueued.enqueued {
+        loop {
+            let transfer = transfer_status(client, username, &t.id)?;
+            if is_terminal_state(&transfer.state) {
+                results.push(transfer);
+                break;
+            }
+            if Instant::now() >= deadline {
+                return Err(Error::SlskdFetchTimeout {
+                    username: username.to_string(),
+                    id: t.id.clone(),
+                    waited_secs: timeout.as_secs(),
+                    last_state: transfer.state,
+                });
+            }
+            std::thread::sleep(POLL_INTERVAL);
+        }
+    }
+    return Ok(results);
 }
 
 fn urlencode(s: &str) -> String {

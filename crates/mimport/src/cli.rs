@@ -64,9 +64,10 @@ pub enum SlskdCmd {
     SearchStatus { id: String },
 
     Fetch {
+        search_id: String,
         username: String,
-        filename: String,
-        size: i64,
+        directory: String,
+        filename: Option<String>,
     },
 
     Status { username: String, id: String },
