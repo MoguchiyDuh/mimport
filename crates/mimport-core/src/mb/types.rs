@@ -89,6 +89,18 @@ pub struct Label {
     pub name: String,
 }
 
+/// Only the fields the §7 scorer's release-group component needs — full artist
+/// credit/genre/disambiguation intentionally omitted, unused by anything in mimport.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct ReleaseGroup {
+    pub id: String,
+    pub title: String,
+    #[serde(rename = "primary-type")]
+    pub primary_type: Option<String>,
+    #[serde(rename = "secondary-types", default)]
+    pub secondary_types: Vec<String>,
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 pub struct RecordingSearchResponse {
     pub recordings: Vec<RecordingSearchResult>,
