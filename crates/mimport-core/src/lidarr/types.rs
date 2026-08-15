@@ -86,7 +86,7 @@ pub struct ReleaseResource {
     pub tracks: Vec<TrackResource>,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct MediaResource {
     #[serde(rename = "Position")]
     pub position: Option<u32>,

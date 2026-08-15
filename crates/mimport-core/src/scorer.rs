@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+
 use serde::Serialize;
 
 use crate::config::Scoring;
@@ -68,10 +70,36 @@ pub fn canonical_track_count(releases: &[NormalizedRelease]) -> Option<u32> {
     return Some(best.0);
 }
 
+fn normalize_title(title: &str) -> String {
+    return title
+        .trim()
+        .to_lowercase()
+        .replace(['\u{2018}', '\u{2019}', '\u{2032}'], "'")
+        .replace(['\u{201c}', '\u{201d}'], "\"")
+        .replace(['\u{2013}', '\u{2014}'], "-");
+}
+
+pub fn canonical_track_titles(releases: &[NormalizedRelease]) -> BTreeSet<String> {
+    let mut counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    for r in releases {
+        let titles: BTreeSet<String> = r.tracks.iter().map(|t| return normalize_title(&t.title)).collect();
+        for t in titles {
+            *counts.entry(t).or_insert(0) += 1;
+        }
+    }
+    let threshold = releases.len();
+    return counts
+        .into_iter()
+        .filter(|(_, n)| return n * 2 >= threshold)
+        .map(|(t, _)| return t)
+        .collect();
+}
+
 pub struct ScoreContext<'a> {
     pub cfg: &'a Scoring,
     pub group: Option<&'a NormalizedReleaseGroup>,
     pub canonical_tracks: Option<u32>,
+    pub canonical_titles: &'a BTreeSet<String>,
 }
 
 pub fn score_release(release: &NormalizedRelease, ctx: &ScoreContext<'_>) -> ScoreBreakdown {
@@ -95,8 +123,8 @@ pub fn score_release(release: &NormalizedRelease, ctx: &ScoreContext<'_>) -> Sco
     score_media(&release.formats, cfg, &mut b);
     score_tracks(release, ctx, &mut b);
     score_metadata(release, cfg, &mut b);
-    let tracklist_penalty = score_terms(release, cfg, &mut b);
-    score_edition(release, cfg, tracklist_penalty, &mut b);
+    score_terms(release, cfg, &mut b);
+    score_bonus_tracks(release, ctx, &mut b);
     score_group(ctx, cfg, &mut b);
 
     return b;
@@ -171,7 +199,7 @@ fn score_metadata(release: &NormalizedRelease, cfg: &Scoring, b: &mut ScoreBreak
     }
 }
 
-fn score_terms(release: &NormalizedRelease, cfg: &Scoring, b: &mut ScoreBreakdown) -> f64 {
+fn score_terms(release: &NormalizedRelease, cfg: &Scoring, b: &mut ScoreBreakdown) {
     let title_penalty = term_penalty(&release.title, cfg);
     if title_penalty > 0.0 {
         b.push(format!("title terms ({title_penalty})"), -title_penalty);
@@ -185,7 +213,6 @@ fn score_terms(release: &NormalizedRelease, cfg: &Scoring, b: &mut ScoreBreakdow
     if tracklist > 0.0 {
         b.push(format!("tracklist terms ({tracklist})"), -tracklist);
     }
-    return tracklist;
 }
 
 fn term_penalty(text: &str, cfg: &Scoring) -> f64 {
@@ -209,33 +236,43 @@ fn term_penalty(text: &str, cfg: &Scoring) -> f64 {
     return total;
 }
 
-fn score_edition(
-    release: &NormalizedRelease,
-    cfg: &Scoring,
-    tracklist_penalty: f64,
-    b: &mut ScoreBreakdown,
-) {
-    let title = release.title.to_lowercase();
-    let disambiguation = release
-        .disambiguation
+fn score_bonus_tracks(release: &NormalizedRelease, ctx: &ScoreContext<'_>, b: &mut ScoreBreakdown) {
+    let cfg = ctx.cfg;
+    let is_official = release
+        .status
         .as_deref()
-        .unwrap_or_default()
-        .to_lowercase();
-    if !cfg
-        .edition
-        .terms
-        .iter()
-        .any(|t| return title.contains(t.as_str()) || disambiguation.contains(t.as_str()))
-    {
+        .is_some_and(|s| return s.eq_ignore_ascii_case("official"));
+    if !is_official {
         return;
     }
-    if tracklist_penalty <= cfg.edition.deluxe_gate {
-        b.push("expanded edition", cfg.edition.deluxe_bonus);
-    } else {
-        b.components.push(Component::new(
-            "expanded edition rejected: non-studio tracklist",
-            0.0,
-        ));
+
+    let mut total = 0.0;
+    for track in &release.tracks {
+        if track.length_ms.is_none() {
+            continue;
+        }
+        if let Some(medium) = &track.medium_format {
+            let medium = medium.to_lowercase();
+            if medium.contains("dvd") || medium.contains("data") || medium.contains("cd-rom") || medium.contains("video") {
+                continue;
+            }
+        }
+        let title = normalize_title(&track.title);
+        if ctx.canonical_titles.contains(&title) {
+            continue;
+        }
+        if term_penalty(&track.title, cfg) > 0.0 {
+            continue;
+        }
+        if ctx.canonical_titles.iter().any(|c| return title.contains(c.as_str())) {
+            continue;
+        }
+        let points = (cfg.bonus.legit_extra_track).min(cfg.bonus.legit_extra_track_cap - total).max(0.0);
+        if points <= 0.0 {
+            continue;
+        }
+        total += points;
+        b.push(format!("bonus track: {}", track.title), points);
     }
 }
 
