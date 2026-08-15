@@ -1,8 +1,10 @@
+pub mod audio;
 pub mod cache;
 pub mod config;
 pub mod error;
 pub mod lidarr;
 pub mod mb;
+pub mod postfix;
 pub mod release;
 pub mod scorer;
 pub mod slskd;

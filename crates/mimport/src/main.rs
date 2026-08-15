@@ -5,6 +5,7 @@ use clap::Parser;
 use mimport_core::error::Error;
 use mimport_core::lidarr::{queries as lidarr_q, LidarrClient};
 use mimport_core::mb::{queries as mb_q, MbClient};
+use mimport_core::postfix;
 use mimport_core::release::{NormalizedRelease, NormalizedReleaseGroup};
 use mimport_core::scorer::{self, ScoreContext};
 use mimport_core::slskd::{queries as slskd_q, SlskdClient};
@@ -22,8 +23,6 @@ fn main() {
     }
 }
 
-/// `mbid:<uuid>` prefix → authoritative lookup, no search involved (DESIGN.md §5,
-/// borrowed from Lidarr's own search-box convention).
 fn is_mbid_query(q: &str) -> Option<&str> {
     return q.strip_prefix("mbid:");
 }
@@ -35,13 +34,11 @@ fn run(cli: &Cli) -> mimport_core::Result<()> {
         Command::Lidarr(cmd) => run_lidarr(cli, &cfg, cmd),
         Command::Mb(cmd) => run_mb(cli, &cfg, cmd),
         Command::Slskd(cmd) => run_slskd(cli, &cfg, cmd),
-        Command::Postfix { .. } => Err(Error::NotImplemented("postfix")),
+        Command::Postfix { path, dry_run } => run_postfix(cli, &cfg, path, *dry_run),
         Command::Import { .. } => Err(Error::NotImplemented("import")),
     }
 }
 
-/// §7 scoring, shared by `lidarr album` and `mb album` — the scorer is backend-agnostic
-/// (DESIGN.md §5), so this is the one place either command's release list gets ranked.
 fn rank_releases(
     releases: &[NormalizedRelease],
     group: &NormalizedReleaseGroup,
@@ -133,6 +130,22 @@ fn run_mb(cli: &Cli, cfg: &Config, cmd: &MbCmd) -> mimport_core::Result<()> {
             output::print(&results, cli.json);
         }
     }
+    return Ok(());
+}
+
+fn run_postfix(
+    cli: &Cli,
+    cfg: &Config,
+    path: &std::path::Path,
+    dry_run: bool,
+) -> mimport_core::Result<()> {
+    let opts = postfix::Options {
+        dry_run,
+        target_rate: cfg.quality.target_samplerate,
+        target_depth: cfg.quality.target_bitdepth,
+    };
+    let report = postfix::run(path, &opts)?;
+    output::print(&report, cli.json);
     return Ok(());
 }
 

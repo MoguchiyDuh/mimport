@@ -1,7 +1,3 @@
-//! Wire types for direct MusicBrainz JSON (`?fmt=json`). Minimal — only what the `mb`
-//! command family actually needs (artist search/lookup, release-group→releases browse,
-//! release→tracks lookup, recording search).
-
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -67,7 +63,6 @@ pub struct Track {
     pub id: String,
     pub number: String,
     pub title: String,
-    /// Milliseconds.
     pub length: Option<u64>,
     pub recording: Recording,
 }
@@ -89,8 +84,6 @@ pub struct Label {
     pub name: String,
 }
 
-/// Only the fields the §7 scorer's release-group component needs — full artist
-/// credit/genre/disambiguation intentionally omitted, unused by anything in mimport.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct ReleaseGroup {
     pub id: String,
