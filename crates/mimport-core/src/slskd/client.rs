@@ -1,14 +1,3 @@
-//! slskd 0.25.1 `/api/v0` client. Confirmed live (2026-08-14) against `myvps`'s
-//! instance: auth is JWT-via-login (`POST /session`), no API key configured. Colocated
-//! deployment — mimport runs on the same host as the slskd container, so `base_url`
-//! defaults to `http://127.0.0.1:8111` with no tunnel/ssh-exec involved.
-//!
-//! `search` deliberately never sets a request-level timeout override shorter than
-//! slskd's own search behavior demands — the upstream `POST /searches` call blocks
-//! server-side until it decides the search is done, and mimport doesn't second-guess
-//! that (see `queries::search`). Every other call uses the client's normal
-//! `request_timeout_secs`.
-
 use std::sync::Mutex;
 use std::time::Duration;
 
@@ -42,8 +31,6 @@ impl SlskdClient {
         });
     }
 
-    /// `POST /api/v0/session` — logs in, caches the JWT. Called lazily on first use and
-    /// again transparently on any `401` (see `call`).
     fn login(&self) -> Result<String> {
         let url = format!("{}/api/v0/session", self.base_url);
         let resp = self
@@ -78,8 +65,6 @@ impl SlskdClient {
         return self.login();
     }
 
-    /// `timeout_override` lets a specific call (namely `search`) wait longer than the
-    /// configured default without changing that default for every other request.
     fn call<T: DeserializeOwned>(
         &self,
         method: reqwest::Method,

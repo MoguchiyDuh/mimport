@@ -1,5 +1,3 @@
-//! Single error type for the whole core crate. Every public function returns `Result<T>`.
-
 use std::path::{Path, PathBuf};
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -80,6 +78,19 @@ pub enum Error {
 
     #[error("probe/tag error at {path}: {reason}")]
     Probe { path: PathBuf, reason: String },
+
+    #[error("required external tool not found on PATH: {tool}")]
+    ToolMissing { tool: &'static str },
+
+    #[error("{tool} failed ({status})\n{stderr}")]
+    ToolFailed {
+        tool: &'static str,
+        status: String,
+        stderr: String,
+    },
+
+    #[error("invalid config value: {0}")]
+    ConfigInvalid(String),
 }
 
 impl Error {
