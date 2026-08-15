@@ -14,15 +14,33 @@ pub struct NormalizedRelease {
     pub id: String,
     pub title: String,
     pub status: Option<String>,
+    /// Display-only. **Not** used by the §7 scorer — the two backends represent country
+    /// differently (MB: ISO codes; the Lidarr proxy: area display names, e.g.
+    /// `"[Worldwide]"`) and neither exposes it identically enough to score on without
+    /// per-backend normalization the project has decided isn't worth the complexity.
     pub country: Option<String>,
     pub disambiguation: Option<String>,
     pub label: Option<String>,
-    /// Primary media format of the first medium (e.g. "Digital Media", "CD", "Vinyl").
-    pub format: Option<String>,
+    /// Every medium's format (e.g. `["Digital Media"]`, or `["CD", "DVD"]` for a mixed
+    /// box set) — the §7 scorer takes the worst across all of them, not just the first.
+    pub formats: Vec<String>,
     pub track_count: u32,
-    /// Empty for summary-level fetches (`lidarr album`/`mb album` don't request full
-    /// tracklists); populated for `lidarr tracks`/`mb tracks`.
+    /// Issue date, used for the §7 ranking tie-break (earliest wins, undated sorts
+    /// last) — not itself a scored signal.
+    pub date: Option<String>,
+    /// Populated at album-summary level too (both backends return full nested
+    /// tracklists for a release-group/album fetch) — the §7 scorer needs real track
+    /// titles to compute term penalties even though the CLI's summary output doesn't
+    /// display them.
     pub tracks: Vec<NormalizedTrack>,
+}
+
+/// Release-group-level fields the §7 scorer needs alongside each release — fetched
+/// once per `lidarr album`/`mb album` call, not per release.
+#[derive(Debug, Clone, Serialize)]
+pub struct NormalizedReleaseGroup {
+    pub primary_type: Option<String>,
+    pub secondary_types: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -36,7 +54,11 @@ pub struct NormalizedTrack {
 impl From<MbRelease> for NormalizedRelease {
     fn from(r: MbRelease) -> Self {
         let track_count = r.media.iter().map(|m| return m.track_count).sum();
-        let format = r.media.first().and_then(|m| return m.format.clone());
+        let formats = r
+            .media
+            .iter()
+            .filter_map(|m| return m.format.clone())
+            .collect();
         let label = r
             .label_info
             .first()
@@ -63,8 +85,9 @@ impl From<MbRelease> for NormalizedRelease {
             country: r.country,
             disambiguation: r.disambiguation,
             label,
-            format,
+            formats,
             track_count,
+            date: r.date,
             tracks,
         };
     }
@@ -72,9 +95,10 @@ impl From<MbRelease> for NormalizedRelease {
 
 impl From<LidarrRelease> for NormalizedRelease {
     fn from(r: LidarrRelease) -> Self {
-        let format = r.media.first().and_then(|m| return m.format.clone());
+        let formats = r.media.iter().filter_map(|m| return m.format.clone()).collect();
         let country = r.country.first().cloned();
         let label = r.label.first().cloned();
+        let date = r.release_date.clone();
         let tracks = r
             .tracks
             .into_iter()
@@ -95,9 +119,28 @@ impl From<LidarrRelease> for NormalizedRelease {
             country,
             disambiguation: r.disambiguation,
             label,
-            format,
+            formats,
             track_count: r.track_count,
+            date,
             tracks,
+        };
+    }
+}
+
+impl From<&crate::lidarr::types::AlbumResource> for NormalizedReleaseGroup {
+    fn from(a: &crate::lidarr::types::AlbumResource) -> Self {
+        return NormalizedReleaseGroup {
+            primary_type: a.album_type.clone(),
+            secondary_types: a.secondary_types.clone(),
+        };
+    }
+}
+
+impl From<&crate::mb::types::ReleaseGroup> for NormalizedReleaseGroup {
+    fn from(g: &crate::mb::types::ReleaseGroup) -> Self {
+        return NormalizedReleaseGroup {
+            primary_type: g.primary_type.clone(),
+            secondary_types: g.secondary_types.clone(),
         };
     }
 }

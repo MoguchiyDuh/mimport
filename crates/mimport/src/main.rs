@@ -5,7 +5,8 @@ use clap::Parser;
 use mimport_core::error::Error;
 use mimport_core::lidarr::{queries as lidarr_q, LidarrClient};
 use mimport_core::mb::{queries as mb_q, MbClient};
-use mimport_core::release::NormalizedRelease;
+use mimport_core::release::{NormalizedRelease, NormalizedReleaseGroup};
+use mimport_core::scorer::{self, ScoreContext};
 use mimport_core::slskd::{queries as slskd_q, SlskdClient};
 use mimport_core::Config;
 
@@ -39,6 +40,23 @@ fn run(cli: &Cli) -> mimport_core::Result<()> {
     }
 }
 
+/// §7 scoring, shared by `lidarr album` and `mb album` — the scorer is backend-agnostic
+/// (DESIGN.md §5), so this is the one place either command's release list gets ranked.
+fn rank_releases(
+    releases: &[NormalizedRelease],
+    group: &NormalizedReleaseGroup,
+    scoring: &mimport_core::config::Scoring,
+) -> Vec<scorer::ScoreBreakdown> {
+    let canonical = scorer::canonical_track_count(releases);
+    let ctx = ScoreContext {
+        cfg: scoring,
+        group: Some(group),
+        canonical_tracks: canonical,
+    };
+    let scored = releases.iter().map(|r| return scorer::score_release(r, &ctx)).collect();
+    return scorer::rank(scored);
+}
+
 fn run_lidarr(cli: &Cli, cfg: &Config, cmd: &LidarrCmd) -> mimport_core::Result<()> {
     let client = LidarrClient::new(&cfg.lidarr)?;
     match cmd {
@@ -53,14 +71,14 @@ fn run_lidarr(cli: &Cli, cfg: &Config, cmd: &LidarrCmd) -> mimport_core::Result<
         }
         LidarrCmd::Album { mbid } => {
             let album = lidarr_q::lookup_album(&client, mbid)?;
-            // TODO §7: run the scorer here once written. For now, just normalize and
-            // return unscored so the command is at least usable end to end.
-            let scored: Vec<NormalizedRelease> = album
+            let group = NormalizedReleaseGroup::from(&album);
+            let releases: Vec<NormalizedRelease> = album
                 .releases
                 .into_iter()
                 .map(NormalizedRelease::from)
                 .collect();
-            output::print(&scored, cli.json);
+            let ranked = rank_releases(&releases, &group, &cfg.scoring);
+            output::print(&ranked, cli.json);
         }
         LidarrCmd::Tracks {
             release_group_mbid,
@@ -97,10 +115,13 @@ fn run_mb(cli: &Cli, cfg: &Config, cmd: &MbCmd) -> mimport_core::Result<()> {
             }
         }
         MbCmd::Album { mbid } => {
-            let releases = mb_q::release_group_releases(&client, mbid)?;
-            let scored: Vec<NormalizedRelease> =
-                releases.into_iter().map(NormalizedRelease::from).collect();
-            output::print(&scored, cli.json);
+            let raw_releases = mb_q::release_group_releases(&client, mbid)?;
+            let group = mb_q::lookup_release_group(&client, mbid)?;
+            let group = NormalizedReleaseGroup::from(&group);
+            let releases: Vec<NormalizedRelease> =
+                raw_releases.into_iter().map(NormalizedRelease::from).collect();
+            let ranked = rank_releases(&releases, &group, &cfg.scoring);
+            output::print(&ranked, cli.json);
         }
         MbCmd::Tracks { release_mbid } => {
             let release = mb_q::release_with_tracks(&client, release_mbid)?;

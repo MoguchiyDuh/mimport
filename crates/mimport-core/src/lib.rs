@@ -4,6 +4,7 @@ pub mod error;
 pub mod lidarr;
 pub mod mb;
 pub mod release;
+pub mod scorer;
 pub mod slskd;
 
 pub use config::Config;
