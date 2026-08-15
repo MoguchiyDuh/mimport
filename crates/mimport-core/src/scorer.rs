@@ -22,6 +22,7 @@ impl Component {
 pub struct ScoreBreakdown {
     pub release_id: String,
     pub title: String,
+    pub disambiguation: Option<String>,
     pub total: f64,
     pub components: Vec<Component>,
     pub status: Option<String>,
@@ -79,6 +80,7 @@ pub fn score_release(release: &NormalizedRelease, ctx: &ScoreContext<'_>) -> Sco
     let mut b = ScoreBreakdown {
         release_id: release.id.clone(),
         title: release.title.clone(),
+        disambiguation: release.disambiguation.clone(),
         total: 0.0,
         components: Vec::new(),
         status: release.status.clone(),
@@ -214,11 +216,16 @@ fn score_edition(
     b: &mut ScoreBreakdown,
 ) {
     let title = release.title.to_lowercase();
+    let disambiguation = release
+        .disambiguation
+        .as_deref()
+        .unwrap_or_default()
+        .to_lowercase();
     if !cfg
         .edition
         .terms
         .iter()
-        .any(|t| return title.contains(t.as_str()))
+        .any(|t| return title.contains(t.as_str()) || disambiguation.contains(t.as_str()))
     {
         return;
     }
