@@ -29,6 +29,7 @@ pub struct NormalizedTrack {
     pub title: String,
     pub length_ms: Option<u64>,
     pub recording_id: Option<String>,
+    pub medium_format: Option<String>,
 }
 
 impl From<MbRelease> for NormalizedRelease {
@@ -47,13 +48,21 @@ impl From<MbRelease> for NormalizedRelease {
         let tracks = r
             .media
             .into_iter()
-            .flat_map(|m| return m.tracks)
-            .map(|t| {
+            .flat_map(|m| {
+                let format = m.format.clone();
+                return m
+                    .tracks
+                    .into_iter()
+                    .map(move |t| return (format.clone(), t))
+                    .collect::<Vec<_>>();
+            })
+            .map(|(medium_format, t)| {
                 return NormalizedTrack {
                     position: t.number.parse().ok(),
                     title: t.title,
                     length_ms: t.length.or(t.recording.length),
                     recording_id: Some(t.recording.id),
+                    medium_format,
                 };
             })
             .collect();
@@ -79,15 +88,21 @@ impl From<LidarrRelease> for NormalizedRelease {
         let country = r.country.first().cloned();
         let label = r.label.first().cloned();
         let date = r.release_date.clone();
+        let media = r.media.clone();
         let tracks = r
             .tracks
             .into_iter()
             .map(|t| {
+                let medium_format = t
+                    .medium_number
+                    .and_then(|n| return media.iter().find(|m| return m.position == Some(n)))
+                    .and_then(|m| return m.format.clone());
                 return NormalizedTrack {
                     position: t.track_number.and_then(|n| return n.parse().ok()),
                     title: t.track_name,
                     length_ms: t.duration_ms,
                     recording_id: t.recording_id,
+                    medium_format,
                 };
             })
             .collect();

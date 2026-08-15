@@ -111,8 +111,6 @@ pub struct Scoring {
     #[serde(default)]
     pub media: MediaWeights,
     #[serde(default)]
-    pub edition: EditionWeights,
-    #[serde(default)]
     pub release_group: ReleaseGroupWeights,
     #[serde(default)]
     pub bonus: BonusWeights,
@@ -125,7 +123,6 @@ impl Default for Scoring {
         return Scoring {
             status: StatusWeights::default(),
             media: MediaWeights::default(),
-            edition: EditionWeights::default(),
             release_group: ReleaseGroupWeights::default(),
             bonus: BonusWeights::default(),
             terms: TermWeights::default(),
@@ -167,31 +164,6 @@ impl Default for MediaWeights {
             other_physical: -95.0,
         };
     }
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct EditionWeights {
-    pub deluxe_bonus: f64,
-    pub deluxe_gate: f64,
-    #[serde(default = "default_edition_terms")]
-    pub terms: Vec<String>,
-}
-
-impl Default for EditionWeights {
-    fn default() -> Self {
-        return EditionWeights {
-            deluxe_bonus: 15.0,
-            deluxe_gate: 25.0,
-            terms: default_edition_terms(),
-        };
-    }
-}
-
-fn default_edition_terms() -> Vec<String> {
-    return ["deluxe", "expanded", "bonus"]
-        .iter()
-        .map(|s| return (*s).to_string())
-        .collect();
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -289,6 +261,8 @@ fn default_secondary_types() -> Vec<String> {
 pub struct BonusWeights {
     pub canonical_track_count: f64,
     pub label_present: f64,
+    pub legit_extra_track: f64,
+    pub legit_extra_track_cap: f64,
 }
 
 impl Default for BonusWeights {
@@ -296,6 +270,8 @@ impl Default for BonusWeights {
         return BonusWeights {
             canonical_track_count: 10.0,
             label_present: 8.0,
+            legit_extra_track: 100.0,
+            legit_extra_track_cap: 400.0,
         };
     }
 }

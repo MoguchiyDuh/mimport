@@ -45,10 +45,12 @@ fn rank_releases(
     scoring: &mimport_core::config::Scoring,
 ) -> Vec<scorer::ScoreBreakdown> {
     let canonical = scorer::canonical_track_count(releases);
+    let canonical_titles = scorer::canonical_track_titles(releases);
     let ctx = ScoreContext {
         cfg: scoring,
         group: Some(group),
         canonical_tracks: canonical,
+        canonical_titles: &canonical_titles,
     };
     let scored = releases.iter().map(|r| return scorer::score_release(r, &ctx)).collect();
     return scorer::rank(scored);
