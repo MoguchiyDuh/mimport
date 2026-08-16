@@ -132,14 +132,30 @@ fn read_local_track(path: &Path) -> Result<LocalTrack> {
         ),
         None => (None, None, None, None),
     };
+    let (filename_title, filename_track) = filename_hint(path);
     return Ok(LocalTrack {
         path: path.to_path_buf(),
-        title,
+        title: title.or(filename_title),
         artist,
-        track_number,
+        track_number: track_number.or(filename_track),
         duration_secs,
         musicbrainz_recording_id,
     });
+}
+
+fn filename_hint(path: &Path) -> (Option<String>, Option<u32>) {
+    let stem = path
+        .file_stem()
+        .and_then(|s| return s.to_str())
+        .unwrap_or("");
+    let (num, title) = match stem.find('-') {
+        Some(i) if stem[..i].trim().parse::<u32>().is_ok() => {
+            let num = stem[..i].trim().parse::<u32>().ok();
+            (num, stem[i + 1..].trim())
+        }
+        _ => (None, stem),
+    };
+    return (if title.is_empty() { None } else { Some(title.to_string()) }, num);
 }
 
 struct Distance {
