@@ -3,6 +3,7 @@ mod output;
 
 use clap::Parser;
 use mimport_core::error::Error;
+use mimport_core::import;
 use mimport_core::jobs;
 use mimport_core::lidarr::{queries as lidarr_q, LidarrClient};
 use mimport_core::mb::{queries as mb_q, MbClient};
@@ -36,7 +37,12 @@ fn run(cli: &Cli) -> mimport_core::Result<()> {
         Command::Mb(cmd) => run_mb(cli, &cfg, cmd),
         Command::Slskd(cmd) => run_slskd(cli, &cfg, cmd),
         Command::Postfix { target, dry_run } => run_postfix(cli, &cfg, target, *dry_run),
-        Command::Import { .. } => Err(Error::NotImplemented("import")),
+        Command::Import {
+            target,
+            release,
+            force,
+            dry_run,
+        } => run_import(cli, &cfg, target, release, force.as_deref(), *dry_run),
     }
 }
 
@@ -136,6 +142,22 @@ fn run_mb(cli: &Cli, cfg: &Config, cmd: &MbCmd) -> mimport_core::Result<()> {
     return Ok(());
 }
 
+/// Numeric id or a jobs.title match takes precedence; an existing filesystem
+/// path not matching either is operated on ad hoc, outside job tracking, per
+/// DESIGN.md §5. Shared by every job-scoped command that also accepts a raw
+/// path (`postfix`, `import`).
+fn resolve_job_or_path(cfg: &Config, target: &str) -> mimport_core::Result<(Option<jobs::Job>, std::path::PathBuf)> {
+    let as_path = std::path::Path::new(target);
+    let is_numeric = target.parse::<i64>().is_ok();
+    if !is_numeric && as_path.exists() {
+        return Ok((None, as_path.to_path_buf()));
+    }
+    let db = jobs::open(&cfg.paths.database)?;
+    let job = jobs::resolve_target(&db, target)?;
+    let dir = std::path::PathBuf::from(&job.local_dir);
+    return Ok((Some(job), dir));
+}
+
 fn run_postfix(cli: &Cli, cfg: &Config, target: &str, dry_run: bool) -> mimport_core::Result<()> {
     let opts = postfix::Options {
         dry_run,
@@ -143,24 +165,75 @@ fn run_postfix(cli: &Cli, cfg: &Config, target: &str, dry_run: bool) -> mimport_
         target_depth: cfg.quality.target_bitdepth,
     };
 
-    // Numeric id or a jobs.title match takes precedence; an existing
-    // filesystem path not matching either is operated on ad hoc, outside
-    // job tracking, per DESIGN.md §5.
-    let as_path = std::path::Path::new(target);
-    let is_numeric = target.parse::<i64>().is_ok();
-    if !is_numeric && as_path.exists() {
-        let report = postfix::run(as_path, &opts)?;
+    let (job, dir) = resolve_job_or_path(cfg, target)?;
+    let report = postfix::run(&dir, &opts)?;
+
+    let Some(job) = job else {
         output::print(&report, cli.json);
         return Ok(());
+    };
+    let job = if dry_run {
+        job
+    } else {
+        let db = jobs::open(&cfg.paths.database)?;
+        jobs::set_job_status(&db, job.id, jobs::STATUS_POSTFIXED)?;
+        jobs::get_job(&db, job.id)?
+    };
+    output::print(&serde_json::json!({"job": job, "report": report}), cli.json);
+    return Ok(());
+}
+
+fn run_import(
+    cli: &Cli,
+    cfg: &Config,
+    target: &str,
+    release_mbid: &str,
+    force: Option<&std::path::Path>,
+    dry_run: bool,
+) -> mimport_core::Result<()> {
+    let (job, dir) = resolve_job_or_path(cfg, target)?;
+
+    let mb_client = MbClient::new(&cfg.musicbrainz)?;
+    let raw_release = mb_q::release_with_tracks(&mb_client, release_mbid)?;
+    let release = NormalizedRelease::from(raw_release);
+
+    let locals = import::scan_local_tracks(&dir)?;
+    let report = match force {
+        Some(mapping_path) => import::apply_force_mapping(&locals, &release, mapping_path)?,
+        None => import::match_tracks(&locals, &release),
+    };
+
+    // A forced mapping bypasses the missing/unmatched block entirely, per
+    // Lidarr's manual-import fallback (RESEARCH.md 2026-08-10 §4) — the human
+    // already took responsibility for whatever they left out of it.
+    let blocked = force.is_none() && report.blocked();
+    let mut imported: Vec<import::ImportedFile> = Vec::new();
+    let mut job = job;
+    if !blocked {
+        let opts = import::ImportOptions {
+            dry_run,
+            library_root: cfg.paths.library.clone(),
+        };
+        imported = import::write_and_copy(&report.matched, &release, &opts)?;
+        if !dry_run && let Some(j) = &job {
+            let db = jobs::open(&cfg.paths.database)?;
+            jobs::set_job_status(&db, j.id, jobs::STATUS_IMPORTED)?;
+            job = Some(jobs::get_job(&db, j.id)?);
+        }
     }
 
-    let db = jobs::open(&cfg.paths.database)?;
-    let job = jobs::resolve_target(&db, target)?;
-    let report = postfix::run(std::path::Path::new(&job.local_dir), &opts)?;
-    if !dry_run {
-        jobs::set_job_status(&db, job.id, jobs::STATUS_POSTFIXED)?;
-    }
-    output::print(&serde_json::json!({"job": job, "report": report}), cli.json);
+    output::print(
+        &serde_json::json!({
+            "job": job,
+            "release": release.id,
+            "blocked": blocked,
+            "matched": report.matched,
+            "unmatched_files": report.unmatched_files,
+            "missing_tracks": report.missing_tracks,
+            "imported": imported,
+        }),
+        cli.json,
+    );
     return Ok(());
 }
 

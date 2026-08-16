@@ -97,6 +97,9 @@ pub enum Error {
 
     #[error("invalid config value: {0}")]
     ConfigInvalid(String),
+
+    #[error("--force mapping invalid: {0}")]
+    ForceMapping(String),
 }
 
 impl Error {

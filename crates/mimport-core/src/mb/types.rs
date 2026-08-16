@@ -47,11 +47,15 @@ pub struct Release {
     pub media: Vec<Media>,
     #[serde(rename = "label-info", default)]
     pub label_info: Vec<LabelInfo>,
+    #[serde(rename = "artist-credit", default)]
+    pub artist_credit: Vec<ArtistCreditItem>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
 pub struct Media {
     pub format: Option<String>,
+    #[serde(default)]
+    pub position: Option<u32>,
     #[serde(rename = "track-count", default)]
     pub track_count: u32,
     #[serde(default)]
@@ -112,4 +116,20 @@ pub struct RecordingSearchResult {
 #[derive(Debug, Deserialize, Serialize)]
 pub struct ArtistCreditItem {
     pub name: String,
+    #[serde(rename = "joinphrase", default)]
+    pub join_phrase: String,
+}
+
+/// Joins MB's artist-credit array into a single display string, honoring each
+/// item's `joinphrase` (e.g. `"Foo"` + `" & "` + `"Bar"` -> `"Foo & Bar"`).
+pub fn join_artist_credit(credits: &[ArtistCreditItem]) -> Option<String> {
+    if credits.is_empty() {
+        return None;
+    }
+    let mut out = String::new();
+    for c in credits {
+        out.push_str(&c.name);
+        out.push_str(&c.join_phrase);
+    }
+    return Some(out);
 }

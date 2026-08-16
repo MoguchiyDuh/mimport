@@ -1,7 +1,7 @@
 use serde::Serialize;
 
 use crate::lidarr::types::ReleaseResource as LidarrRelease;
-use crate::mb::types::Release as MbRelease;
+use crate::mb::types::{join_artist_credit, Release as MbRelease};
 
 #[derive(Debug, Clone, Serialize)]
 pub struct NormalizedRelease {
@@ -14,6 +14,10 @@ pub struct NormalizedRelease {
     pub formats: Vec<String>,
     pub track_count: u32,
     pub date: Option<String>,
+    /// Release-level artist credit, joined (e.g. `"Foo & Bar"`). Only populated
+    /// via the MB-direct backend (`inc=artist-credits`) — the Lidarr proxy has
+    /// no artist field anywhere in the album/release payload.
+    pub artist_credit: Option<String>,
     pub tracks: Vec<NormalizedTrack>,
 }
 
@@ -30,6 +34,17 @@ pub struct NormalizedTrack {
     pub length_ms: Option<u64>,
     pub recording_id: Option<String>,
     pub medium_format: Option<String>,
+    /// 1-based disc/medium number. `None` is treated as disc 1 by consumers.
+    pub medium_position: Option<u32>,
+}
+
+impl NormalizedRelease {
+    /// Leading `YYYY` off `date` (MB dates are `YYYY`, `YYYY-MM`, or
+    /// `YYYY-MM-DD`; Lidarr's `releaseDate` is a full ISO timestamp — both
+    /// split cleanly on the first `-`). `None` if `date` itself is `None`.
+    pub fn year(&self) -> Option<&str> {
+        return self.date.as_deref().and_then(|d| return d.split('-').next());
+    }
 }
 
 impl From<MbRelease> for NormalizedRelease {
@@ -45,24 +60,27 @@ impl From<MbRelease> for NormalizedRelease {
             .first()
             .and_then(|li| return li.label.as_ref())
             .map(|l| return l.name.clone());
+        let artist_credit = join_artist_credit(&r.artist_credit);
         let tracks = r
             .media
             .into_iter()
             .flat_map(|m| {
                 let format = m.format.clone();
+                let position = m.position;
                 return m
                     .tracks
                     .into_iter()
-                    .map(move |t| return (format.clone(), t))
+                    .map(move |t| return (format.clone(), position, t))
                     .collect::<Vec<_>>();
             })
-            .map(|(medium_format, t)| {
+            .map(|(medium_format, medium_position, t)| {
                 return NormalizedTrack {
                     position: t.number.parse().ok(),
                     title: t.title,
                     length_ms: t.length.or(t.recording.length),
                     recording_id: Some(t.recording.id),
                     medium_format,
+                    medium_position,
                 };
             })
             .collect();
@@ -77,6 +95,7 @@ impl From<MbRelease> for NormalizedRelease {
             formats,
             track_count,
             date: r.date,
+            artist_credit,
             tracks,
         };
     }
@@ -103,6 +122,7 @@ impl From<LidarrRelease> for NormalizedRelease {
                     length_ms: t.duration_ms,
                     recording_id: t.recording_id,
                     medium_format,
+                    medium_position: t.medium_number,
                 };
             })
             .collect();
@@ -115,6 +135,7 @@ impl From<LidarrRelease> for NormalizedRelease {
             disambiguation: r.disambiguation,
             label,
             formats,
+            artist_credit: None,
             track_count: r.track_count,
             date,
             tracks,
