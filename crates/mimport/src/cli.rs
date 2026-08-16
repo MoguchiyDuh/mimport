@@ -27,7 +27,8 @@ pub enum Command {
     Slskd(SlskdCmd),
 
     Postfix {
-        path: PathBuf,
+        /// job id, jobs.title, or a raw filesystem path (ad hoc, outside job tracking)
+        target: String,
         #[arg(long)]
         dry_run: bool,
     },
@@ -68,13 +69,17 @@ pub enum SlskdCmd {
         username: String,
         directory: String,
         filename: Option<String>,
+        /// jobs.title for this job; defaults to the last path component of `directory`
+        #[arg(long)]
+        title: Option<String>,
     },
 
-    Status { username: String, id: String },
+    /// job id or jobs.title (see `fetch --title`)
+    Status { target: String },
 
+    /// job id or jobs.title (see `fetch --title`)
     Cancel {
-        username: String,
-        id: String,
+        target: String,
         #[arg(long)]
         remove: bool,
     },

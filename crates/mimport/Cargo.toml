@@ -7,6 +7,9 @@ edition.workspace = true
 name = "mimport"
 path = "src/main.rs"
 
+[lints]
+workspace = true
+
 [dependencies]
 mimport-core = { path = "../mimport-core" }
 clap.workspace = true

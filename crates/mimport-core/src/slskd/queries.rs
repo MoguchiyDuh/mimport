@@ -129,18 +129,24 @@ pub fn fetch_wait_timeout(cfg: &SlskdConfig, size_bytes: i64) -> Duration {
     return Duration::from_secs_f64(secs.max(1.0));
 }
 
-fn is_terminal_state(state: &str) -> bool {
+pub fn is_terminal_state(state: &str) -> bool {
     return state.starts_with("Completed")
         || state.contains("Cancelled")
         || state.contains("Errored")
         || state.contains("Rejected");
 }
 
+/// Enqueues `files` and polls each to a terminal state. `on_update` is called
+/// with every observed `Transfer` (including the initial post-enqueue state
+/// and every subsequent poll) so a caller can persist progress incrementally
+/// — it still runs, and its result still propagates, even on a timeout below,
+/// so callers see the last-known state of every transfer either way.
 pub fn fetch_and_wait(
     client: &SlskdClient,
     cfg: &SlskdConfig,
     username: &str,
     files: &[&SlskdFile],
+    mut on_update: impl FnMut(&Transfer) -> Result<()>,
 ) -> Result<Vec<Transfer>> {
     let items: Vec<QueueDownloadRequestItem> = files
         .iter()
@@ -159,6 +165,9 @@ pub fn fetch_and_wait(
             body: format!("no transfers returned in enqueued[] (failed: {:?})", enqueued.failed),
         });
     }
+    for t in &enqueued.enqueued {
+        on_update(t)?;
+    }
 
     let total_size: i64 = files.iter().map(|f| return f.size).sum();
     let timeout = fetch_wait_timeout(cfg, total_size);
@@ -168,6 +177,7 @@ pub fn fetch_and_wait(
     for t in &enqueued.enqueued {
         loop {
             let transfer = transfer_status(client, username, &t.id)?;
+            on_update(&transfer)?;
             if is_terminal_state(&transfer.state) {
                 results.push(transfer);
                 break;

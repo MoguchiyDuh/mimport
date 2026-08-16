@@ -67,6 +67,9 @@ pub enum Error {
     #[error("slskd fetch selector matched no {what}: {detail}")]
     SlskdSelectorNotFound { what: &'static str, detail: String },
 
+    #[error("no job matches {target:?} (not a known job id and no job.title matches it)")]
+    JobNotFound { target: String },
+
     #[error("http transport error: {0}")]
     Http(#[from] reqwest::Error),
 

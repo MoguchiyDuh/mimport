@@ -2,6 +2,7 @@ pub mod audio;
 pub mod cache;
 pub mod config;
 pub mod error;
+pub mod jobs;
 pub mod lidarr;
 pub mod mb;
 pub mod postfix;
