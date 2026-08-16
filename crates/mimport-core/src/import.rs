@@ -5,11 +5,13 @@ use std::path::{Path, PathBuf};
 
 use lofty::config::WriteOptions;
 use lofty::file::{AudioFile, TaggedFileExt};
+use lofty::picture::{MimeType, Picture, PictureType};
 use lofty::probe::read_from_path;
 use lofty::tag::{Accessor, ItemKey, Tag};
 use pathfinding::prelude::{kuhn_munkres_min, Matrix};
 use serde::Serialize;
 
+use crate::coverart::CoverArt;
 use crate::error::{Error, Result};
 use crate::release::{NormalizedRelease, NormalizedTrack};
 use crate::scorer::text_similarity;
@@ -349,7 +351,7 @@ pub struct ImportedFile {
 
 /// Copies each matched file into the library layout and writes clean tags onto
 /// the copy; the source is never touched or moved.
-pub fn write_and_copy(matched: &[MatchedTrack], release: &NormalizedRelease, opts: &ImportOptions) -> Result<Vec<ImportedFile>> {
+pub fn write_and_copy(matched: &[MatchedTrack], release: &NormalizedRelease, opts: &ImportOptions, cover_art: Option<&CoverArt>) -> Result<Vec<ImportedFile>> {
     let multi_disc = release.tracks.iter().any(|t| return t.medium_position.unwrap_or(1) > 1);
     let artist_dir = sanitize(release.artist_credit.as_deref().unwrap_or("Unknown Artist"));
     let year = release.year().unwrap_or("");
@@ -383,7 +385,7 @@ pub fn write_and_copy(matched: &[MatchedTrack], release: &NormalizedRelease, opt
             std::fs::create_dir_all(parent).map_err(|e| return Error::io(parent, e))?;
         }
         std::fs::copy(&m.file, &dest).map_err(|e| return Error::io(&dest, e))?;
-        write_tags(&dest, m, release)?;
+        write_tags(&dest, m, release, cover_art)?;
         out.push(ImportedFile {
             source: m.file.clone(),
             dest,
@@ -393,7 +395,7 @@ pub fn write_and_copy(matched: &[MatchedTrack], release: &NormalizedRelease, opt
 }
 
 /// Writes a fresh tag, not a patch onto whatever the source carried.
-fn write_tags(path: &Path, m: &MatchedTrack, release: &NormalizedRelease) -> Result<()> {
+fn write_tags(path: &Path, m: &MatchedTrack, release: &NormalizedRelease, cover_art: Option<&CoverArt>) -> Result<()> {
     let mut tagged = read_from_path(path).map_err(|e| {
         return Error::Probe {
             path: path.to_path_buf(),
@@ -420,6 +422,14 @@ fn write_tags(path: &Path, m: &MatchedTrack, release: &NormalizedRelease) -> Res
         let _ = tag.insert_text(ItemKey::MusicBrainzRecordingId, id.clone());
     }
     let _ = tag.insert_text(ItemKey::MusicBrainzReleaseId, release.id.clone());
+
+    if let Some(ca) = cover_art {
+        let picture = Picture::unchecked(ca.bytes.clone())
+            .pic_type(PictureType::CoverFront)
+            .mime_type(MimeType::from_str(&ca.mime))
+            .build();
+        tag.push_picture(picture);
+    }
 
     let _ = tagged.insert_tag(tag);
     tagged.save_to_path(path, WriteOptions::default()).map_err(|e| {

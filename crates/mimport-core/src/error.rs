@@ -43,6 +43,9 @@ pub enum Error {
     #[error("lidarr proxy is still failing after {attempts} attempts")]
     LidarrUnavailable { attempts: u32 },
 
+    #[error("cover art archive failed: HTTP {status}\n{body}")]
+    CoverArt { status: u16, body: String },
+
     #[error("slskd {what} failed: HTTP {status}\n{body}")]
     Slskd {
         what: &'static str,
