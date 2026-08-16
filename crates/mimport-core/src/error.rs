@@ -100,6 +100,12 @@ pub enum Error {
 
     #[error("--force mapping invalid: {0}")]
     ForceMapping(String),
+
+    #[error("no library track with id {id}")]
+    TrackNotFound { id: i64 },
+
+    #[error("invalid library query term {term:?}: {reason}")]
+    QuerySyntax { term: String, reason: &'static str },
 }
 
 impl Error {

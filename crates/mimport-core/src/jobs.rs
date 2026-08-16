@@ -45,6 +45,7 @@ pub fn open(path: impl AsRef<Path>) -> Result<Connection> {
     }
     let conn = Connection::open(path)?;
     ensure_schema(&conn)?;
+    crate::library::ensure_schema(&conn)?;
     return Ok(conn);
 }
 

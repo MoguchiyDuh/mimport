@@ -5,6 +5,7 @@ use clap::Parser;
 use mimport_core::error::Error;
 use mimport_core::import;
 use mimport_core::jobs;
+use mimport_core::library;
 use mimport_core::lidarr::{queries as lidarr_q, LidarrClient};
 use mimport_core::mb::{queries as mb_q, MbClient};
 use mimport_core::postfix;
@@ -13,7 +14,7 @@ use mimport_core::scorer::{self, ScoreContext};
 use mimport_core::slskd::{queries as slskd_q, SlskdClient};
 use mimport_core::Config;
 
-use cli::{Cli, Command, LidarrCmd, MbCmd, SlskdCmd};
+use cli::{Cli, Command, LibraryCmd, LidarrCmd, MbCmd, SlskdCmd};
 
 fn main() {
     tracing_subscriber::fmt().with_target(false).init();
@@ -43,6 +44,7 @@ fn run(cli: &Cli) -> mimport_core::Result<()> {
             force,
             dry_run,
         } => run_import(cli, &cfg, target, release, force.as_deref(), *dry_run),
+        Command::Library(cmd) => run_library(cli, &cfg, cmd),
     }
 }
 
@@ -215,10 +217,17 @@ fn run_import(
             library_root: cfg.paths.library.clone(),
         };
         imported = import::write_and_copy(&report.matched, &release, &opts)?;
-        if !dry_run && let Some(j) = &job {
+        if !dry_run {
             let db = jobs::open(&cfg.paths.database)?;
-            jobs::set_job_status(&db, j.id, jobs::STATUS_IMPORTED)?;
-            job = Some(jobs::get_job(&db, j.id)?);
+            // §9: every copy just written gets a library_tracks row, job-scoped
+            // or not (an ad hoc path target still gets indexed with job_id NULL).
+            for (m, f) in report.matched.iter().zip(imported.iter()) {
+                library::insert_track(&db, job.as_ref().map(|j| return j.id), &release, m, f)?;
+            }
+            if let Some(j) = &job {
+                jobs::set_job_status(&db, j.id, jobs::STATUS_IMPORTED)?;
+                job = Some(jobs::get_job(&db, j.id)?);
+            }
         }
     }
 
@@ -234,6 +243,28 @@ fn run_import(
         }),
         cli.json,
     );
+    return Ok(());
+}
+
+fn run_library(cli: &Cli, cfg: &Config, cmd: &LibraryCmd) -> mimport_core::Result<()> {
+    let db = jobs::open(&cfg.paths.database)?;
+    match cmd {
+        LibraryCmd::List { query } => {
+            let clauses = library::parse_query(query)?;
+            let tracks = library::list_tracks(&db, &clauses)?;
+            output::print(&tracks, cli.json);
+        }
+        LibraryCmd::Show { id } => {
+            let track = library::get_track(&db, *id)?;
+            output::print(&track, cli.json);
+        }
+        LibraryCmd::Remove { files, query } => {
+            let clauses = library::parse_query(query)?;
+            let tracks = library::list_tracks(&db, &clauses)?;
+            let deleted_files = library::remove(&db, &tracks, *files)?;
+            output::print(&serde_json::json!({"removed": tracks, "deleted_files": deleted_files}), cli.json);
+        }
+    }
     return Ok(());
 }
 
