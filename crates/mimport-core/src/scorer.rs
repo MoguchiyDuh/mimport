@@ -103,9 +103,7 @@ fn levenshtein(a: &str, b: &str) -> usize {
 }
 
 /// `1 - normalized Levenshtein distance`, on top of [`normalize_title`]'s
-/// quote/dash/case normalization. Shared between §8 track matching
-/// (`import.rs`) and the §9 library query language's `~fuzzy` terms
-/// (`library.rs`) — one text-similarity notion for the whole crate.
+/// quote/dash/case normalization.
 pub(crate) fn text_similarity(a: &str, b: &str) -> f64 {
     let a = normalize_title(a);
     let b = normalize_title(b);

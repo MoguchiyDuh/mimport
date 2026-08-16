@@ -1,8 +1,4 @@
-//! §8 matching/import: Munkres/Hungarian assignment over a weighted
-//! title/duration/track-index/MBID-conflict cost matrix, scoped down from
-//! Lidarr's version per RESEARCH.md 2026-08-10 (`DistanceCalculator`) — no
-//! candidate generation (the release is already chosen), no AcoustID
-//! fingerprinting, no filename-parsing fallback (files carry real tags).
+//! Munkres/Hungarian matching of local files against a chosen release's tracks.
 
 use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -18,11 +14,9 @@ use crate::error::{Error, Result};
 use crate::release::{NormalizedRelease, NormalizedTrack};
 use crate::scorer::text_similarity;
 
-/// Per-track distance above this is rejected even if Munkres assigned it —
-/// mirrors Lidarr's `CloseTrackMatchSpecification` (0.40).
+/// Per-track distance above this is rejected even if Munkres assigned it.
 pub const REJECT_THRESHOLD: f64 = 0.40;
 
-// Weight table from RESEARCH.md 2026-08-10 §2 (Lidarr's `DistanceCalculator.TrackDistance`).
 const W_RECORDING_ID: f64 = 10.0;
 const W_TITLE: f64 = 3.0;
 const W_LENGTH: f64 = 2.0;
@@ -31,10 +25,8 @@ const W_INDEX: f64 = 1.0;
 const TOTAL_WEIGHT: f64 = W_RECORDING_ID + W_TITLE + W_LENGTH + W_ARTIST + W_INDEX;
 
 const SCALE: i64 = 1_000_000;
-/// Cost for a dummy row/column when padding the assignment matrix to square —
-/// deliberately equal to the maximum real (normalized) distance, so any
-/// genuinely close real match is always preferred by the optimizer, while a
-/// hopeless one is roughly indifferent to going unmatched.
+/// Dummy row/column cost when padding to square; equals the max real distance
+/// so real matches win and hopeless ones can go unmatched.
 const DUMMY_COST_SCALED: i64 = SCALE;
 
 const AUDIO_EXTENSIONS: &[&str] = &["flac", "mp3", "m4a", "mp4", "ogg", "opus", "wav", "ape", "wv"];
@@ -75,15 +67,13 @@ pub struct MatchReport {
 }
 
 impl MatchReport {
-    /// The `NoMissingOrUnmatchedTracksSpecification` gate — blocks the actual
-    /// copy/tag-write step by default whenever either set is non-empty.
+    /// Blocks the copy/tag step whenever either set is non-empty.
     pub fn blocked(&self) -> bool {
         return !self.unmatched_files.is_empty() || !self.missing_tracks.is_empty();
     }
 }
 
-/// Walks `dir` for audio files and reads title/artist/track/duration/MBID via
-/// lofty. A single file path is accepted too (mirrors `postfix::collect_flacs`).
+/// Reads local audio files (a dir or a single file) into `LocalTrack`s.
 pub fn scan_local_tracks(dir: &Path) -> Result<Vec<LocalTrack>> {
     let mut paths = Vec::new();
     if dir.is_file() {
@@ -158,8 +148,7 @@ struct Distance {
 fn track_distance(local: &LocalTrack, track: &NormalizedTrack, release_artist: Option<&str>) -> Distance {
     let mut reasons = BTreeMap::new();
 
-    // MBIDs are a hint, never ground truth: only penalized on an explicit
-    // conflict, never for missing data on either side.
+    // MBIDs are a hint: penalized only on an explicit conflict, never for missing data.
     let recording_id_cost = match (&local.musicbrainz_recording_id, &track.recording_id) {
         (Some(local_id), Some(track_id)) if local_id != track_id => 1.0,
         _ => 0.0,
@@ -198,11 +187,8 @@ fn track_distance(local: &LocalTrack, track: &NormalizedTrack, release_artist: O
     return Distance { total, reasons };
 }
 
-/// Munkres/Hungarian assignment of `locals` against `release`'s tracklist.
-/// Unequal-size sets are handled by padding the cost matrix to square with
-/// dummy rows/columns rather than forcing a bijection — every local file and
-/// every release track gets a real chance to land in `unmatched_files` /
-/// `missing_tracks` instead of being force-matched to the nearest leftover.
+/// Munkres assignment; padded to square so files/tracks can go unmatched
+/// rather than force-pair with the nearest leftover.
 pub fn match_tracks(locals: &[LocalTrack], release: &NormalizedRelease) -> MatchReport {
     let n = locals.len();
     let m = release.tracks.len();
@@ -286,12 +272,8 @@ pub fn match_tracks(locals: &[LocalTrack], release: &NormalizedRelease) -> Match
     };
 }
 
-/// Parses a `{"<file path as shown in an automatic MatchReport>": <track
-/// position>}` JSON mapping and builds a report directly from it, bypassing
-/// Munkres entirely — Lidarr's manual-import fallback runs "with no matching
-/// specs applied at all" once a human has assigned track IDs (RESEARCH.md
-/// 2026-08-10 §4). Files/tracks not covered by the mapping are still
-/// reported as unmatched/missing, not silently dropped.
+/// Parses a `{"<file path>": <track position>}` mapping into a report,
+/// bypassing matching. Unmapped files/tracks still report unmatched/missing.
 pub fn apply_force_mapping(locals: &[LocalTrack], release: &NormalizedRelease, mapping_path: &Path) -> Result<MatchReport> {
     let text = std::fs::read_to_string(mapping_path).map_err(|e| return Error::io(mapping_path, e))?;
     let mapping: BTreeMap<String, u32> =
@@ -365,11 +347,8 @@ pub struct ImportedFile {
     pub dest: PathBuf,
 }
 
-/// Copies each matched file into `paths.library` under a Lidarr-style layout
-/// (`<Artist>/<Album> (<Year>)/<track:02> - <Title>.<ext>`, `<disc:02>-
-/// <track:02>` filename prefix instead of an extra subfolder for multi-disc
-/// releases) and writes final clean tags onto the COPY — the source download
-/// is never touched or moved, per DESIGN.md §4 stage 8.
+/// Copies each matched file into the library layout and writes clean tags onto
+/// the copy; the source is never touched or moved.
 pub fn write_and_copy(matched: &[MatchedTrack], release: &NormalizedRelease, opts: &ImportOptions) -> Result<Vec<ImportedFile>> {
     let multi_disc = release.tracks.iter().any(|t| return t.medium_position.unwrap_or(1) > 1);
     let artist_dir = sanitize(release.artist_credit.as_deref().unwrap_or("Unknown Artist"));
@@ -413,11 +392,7 @@ pub fn write_and_copy(matched: &[MatchedTrack], release: &NormalizedRelease, opt
     return Ok(out);
 }
 
-/// Writes a **fresh** tag, not a patch onto whatever the Soulseek source
-/// carried — DESIGN.md's "MBIDs are a hint, never ground truth" extends to
-/// all embedded source metadata, and postfix's own docs defer "full
-/// retagging" to here. Anything the source had that isn't rebuilt below
-/// (ENCODER, REPLAYGAIN_*, CATALOGNUMBER, stray junk comments, ...) is gone.
+/// Writes a fresh tag, not a patch onto whatever the source carried.
 fn write_tags(path: &Path, m: &MatchedTrack, release: &NormalizedRelease) -> Result<()> {
     let mut tagged = read_from_path(path).map_err(|e| {
         return Error::Probe {

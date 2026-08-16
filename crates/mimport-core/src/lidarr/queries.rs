@@ -15,14 +15,11 @@ pub fn lookup_artist(client: &LidarrClient, mbid: &str) -> Result<ArtistResource
     return client.get(&format!("/artist/{mbid}"), &[]);
 }
 
-/// Full album with `Releases[]` nested (each carrying `Tracks[]`) — one call gets what
-/// `mb` needs two for. Backs `lidarr album` (after §7 scoring) and `lidarr tracks`
-/// (caller picks one `Releases[]` entry by id).
 pub fn lookup_album(client: &LidarrClient, mbid: &str) -> Result<AlbumResource> {
     return client.get(&format!("/album/{mbid}"), &[]);
 }
 
-#[allow(dead_code)] // not wired into a command yet — kept for the combined-search path noted in RESEARCH.md
+#[allow(dead_code)]
 pub fn search_all(client: &LidarrClient, query: &str) -> Result<Vec<SearchResultItem>> {
     return client.get("/search", &[("type", "all"), ("query", query)]);
 }

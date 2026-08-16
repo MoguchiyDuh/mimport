@@ -1,8 +1,6 @@
-//! Wire types for `api.lidarr.audio`. **Casing is genuinely inconsistent within the same
-//! object** (confirmed live 2026-08-10) — e.g. an artist has lowercase `id`/`artistname`
-//! but PascalCase `Albums`/`Rating.Count`. No blanket `rename_all` works here; every
-//! field is explicitly renamed. Don't "clean this up" without re-verifying against a
-//! live response first.
+//! Wire types for `api.lidarr.audio`. Key casing is inconsistent within the same object,
+//! so every field is explicitly renamed — don't switch to a blanket `rename_all` without
+//! re-verifying against a live response.
 
 use serde::{Deserialize, Serialize};
 
@@ -22,8 +20,7 @@ pub struct ArtistResource {
     pub status: Option<String>,
     #[serde(rename = "genres", default)]
     pub genres: Vec<String>,
-    /// Empty on search results; populated (summary-only, no nested releases) on
-    /// `/artist/{mbid}` lookups.
+    /// Empty on search results; summary-only on lookups.
     #[serde(rename = "Albums", default)]
     pub albums: Vec<AlbumSummary>,
 }

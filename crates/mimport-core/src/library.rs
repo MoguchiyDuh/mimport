@@ -1,8 +1,4 @@
-//! §9 library index + query language: a beets-inspired (deliberately much
-//! smaller) `field:value`/free-text/`~fuzzy`/`..range`/`-negate` grammar over
-//! a flat `library_tracks` table populated by `import` at copy time. No
-//! regex operator, no `,`-OR, no sort operators, no album-vs-item mode split
-//! — see DESIGN.md §9 for what was intentionally left out and why.
+//! Library index + query language over `library_tracks`.
 
 use std::path::Path;
 
@@ -14,8 +10,7 @@ use crate::import::{ImportedFile, MatchedTrack};
 use crate::release::NormalizedRelease;
 use crate::scorer::text_similarity;
 
-/// `text_similarity(...) >= FUZZY_THRESHOLD` counts as a `~fuzzy` hit —
-/// matches beets' `fuzzy` plugin default (`config_default.yaml: fuzzy.threshold: 0.7`).
+/// `~fuzzy` hit threshold on `text_similarity`.
 const FUZZY_THRESHOLD: f64 = 0.7;
 
 #[derive(Debug, Clone, Serialize)]
@@ -58,9 +53,7 @@ pub(crate) fn ensure_schema(conn: &Connection) -> Result<()> {
     return Ok(());
 }
 
-/// Records one `import`-copied file. Keyed by `path` (`ON CONFLICT ...
-/// DO UPDATE`) so re-running `import` over the same job after fixing a
-/// missing file updates the existing row instead of duplicating it.
+/// Upsert one imported file, keyed by `path`.
 pub fn insert_track(conn: &Connection, job_id: Option<i64>, release: &NormalizedRelease, matched: &MatchedTrack, imported: &ImportedFile) -> Result<i64> {
     let artist = release.artist_credit.clone().unwrap_or_else(|| return "Unknown Artist".to_string());
     let format = imported
@@ -114,10 +107,7 @@ pub fn get_track(conn: &Connection, id: i64) -> Result<LibraryTrack> {
         });
 }
 
-/// Deletes rows by id. Does **not** touch files on disk — the file-deletion
-/// decision (`remove --files`) is the caller's, made from the `path`s this
-/// returns nothing about; callers must `get_track`/`list_tracks` first to
-/// learn the paths before calling this.
+/// Deletes rows by id; does not touch files on disk.
 pub fn remove_tracks(conn: &Connection, ids: &[i64]) -> Result<()> {
     if ids.is_empty() {
         return Ok(());
@@ -130,10 +120,7 @@ pub fn remove_tracks(conn: &Connection, ids: &[i64]) -> Result<()> {
     return Ok(());
 }
 
-/// All rows matching every clause of `query` (AND across clauses), sorted
-/// `artist, album, disc, track`. Filtered in Rust after one full-table
-/// fetch, not dynamic SQL — a single-user local library is small enough
-/// that this is simpler and lets `~fuzzy` reuse `text_similarity` directly.
+/// All rows matching every clause (AND), sorted `artist, album, disc, track`.
 pub fn list_tracks(conn: &Connection, query: &[Clause]) -> Result<Vec<LibraryTrack>> {
     let mut stmt = conn.prepare("SELECT * FROM library_tracks")?;
     let mut rows = stmt
@@ -268,13 +255,8 @@ fn match_field(t: &LibraryTrack, field: Field, kind: &MatchKind) -> bool {
     };
 }
 
-/// Parses already-shell-tokenized terms (each `argv` entry is one clause —
-/// no re-splitting/quote-handling here, the shell already did that).
-/// Grammar per term: optional leading `-`/`^` (negate) → optional
-/// `field:` prefix (`artist`/`album`/`title`/`year`/`track`/`disc`/`path`/
-/// `release`/`recording`; unrecognized prefixes fall back to free text, not
-/// an error) → optional `~` (fuzzy) or `=` (exact) or, on a numeric field
-/// only, a `lo..hi` range → default: case-insensitive substring.
+/// Parses shell-tokenized terms. Per term: `-`/`^` negate, `field:` prefix,
+/// `~`/`=`/`lo..hi`/substring value.
 pub fn parse_query(terms: &[String]) -> Result<Vec<Clause>> {
     return terms.iter().map(|t| return parse_term(t)).collect();
 }
@@ -325,9 +307,7 @@ fn parse_term(raw: &str) -> Result<Clause> {
     return Ok(Clause { field, negate, kind });
 }
 
-/// Deletes each track's row and, if `delete_files`, its underlying file too
-/// (best-effort — a file already missing on disk is not an error, matching
-/// `import`'s "the index can outlive the file" reality).
+/// Deletes each track's row and, if `delete_files`, its file (best-effort).
 pub fn remove(conn: &Connection, tracks: &[LibraryTrack], delete_files: bool) -> Result<Vec<String>> {
     let mut deleted_files = Vec::new();
     if delete_files {
