@@ -3,6 +3,9 @@ name = "mimport-core"
 version.workspace = true
 edition.workspace = true
 
+[lints]
+workspace = true
+
 [dependencies]
 reqwest.workspace = true
 serde.workspace = true

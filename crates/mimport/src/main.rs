@@ -3,6 +3,7 @@ mod output;
 
 use clap::Parser;
 use mimport_core::error::Error;
+use mimport_core::jobs;
 use mimport_core::lidarr::{queries as lidarr_q, LidarrClient};
 use mimport_core::mb::{queries as mb_q, MbClient};
 use mimport_core::postfix;
@@ -34,7 +35,7 @@ fn run(cli: &Cli) -> mimport_core::Result<()> {
         Command::Lidarr(cmd) => run_lidarr(cli, &cfg, cmd),
         Command::Mb(cmd) => run_mb(cli, &cfg, cmd),
         Command::Slskd(cmd) => run_slskd(cli, &cfg, cmd),
-        Command::Postfix { path, dry_run } => run_postfix(cli, &cfg, path, *dry_run),
+        Command::Postfix { target, dry_run } => run_postfix(cli, &cfg, target, *dry_run),
         Command::Import { .. } => Err(Error::NotImplemented("import")),
     }
 }
@@ -135,19 +136,31 @@ fn run_mb(cli: &Cli, cfg: &Config, cmd: &MbCmd) -> mimport_core::Result<()> {
     return Ok(());
 }
 
-fn run_postfix(
-    cli: &Cli,
-    cfg: &Config,
-    path: &std::path::Path,
-    dry_run: bool,
-) -> mimport_core::Result<()> {
+fn run_postfix(cli: &Cli, cfg: &Config, target: &str, dry_run: bool) -> mimport_core::Result<()> {
     let opts = postfix::Options {
         dry_run,
         target_rate: cfg.quality.target_samplerate,
         target_depth: cfg.quality.target_bitdepth,
     };
-    let report = postfix::run(path, &opts)?;
-    output::print(&report, cli.json);
+
+    // Numeric id or a jobs.title match takes precedence; an existing
+    // filesystem path not matching either is operated on ad hoc, outside
+    // job tracking, per DESIGN.md §5.
+    let as_path = std::path::Path::new(target);
+    let is_numeric = target.parse::<i64>().is_ok();
+    if !is_numeric && as_path.exists() {
+        let report = postfix::run(as_path, &opts)?;
+        output::print(&report, cli.json);
+        return Ok(());
+    }
+
+    let db = jobs::open(&cfg.paths.database)?;
+    let job = jobs::resolve_target(&db, target)?;
+    let report = postfix::run(std::path::Path::new(&job.local_dir), &opts)?;
+    if !dry_run {
+        jobs::set_job_status(&db, job.id, jobs::STATUS_POSTFIXED)?;
+    }
+    output::print(&serde_json::json!({"job": job, "report": report}), cli.json);
     return Ok(());
 }
 
@@ -167,23 +180,61 @@ fn run_slskd(cli: &Cli, cfg: &Config, cmd: &SlskdCmd) -> mimport_core::Result<()
             username,
             directory,
             filename,
+            title,
         } => {
             let search = slskd_q::search_status(&client, search_id)?;
             let files = slskd_q::resolve_selector(&search, username, directory, filename.as_deref())?;
-            let transfers = slskd_q::fetch_and_wait(&client, &cfg.slskd, username, &files)?;
-            output::print(&transfers, cli.json);
+
+            let db = jobs::open(&cfg.paths.database)?;
+            let local_dir = jobs::local_dir_for(&cfg.paths.downloads, directory);
+            let job_title = title.clone().unwrap_or_else(|| return jobs::default_title(directory));
+            let job_id = jobs::create_job(&db, &job_title, search_id, username, directory, &local_dir)?;
+
+            let result = slskd_q::fetch_and_wait(&client, &cfg.slskd, username, &files, |t| {
+                return jobs::upsert_job_file(&db, job_id, &local_dir, t);
+            });
+            let transfers = match result {
+                Ok(transfers) => {
+                    jobs::set_job_status(&db, job_id, jobs::derive_status(&transfers))?;
+                    transfers
+                }
+                Err(e) => {
+                    return Err(e);
+                }
+            };
+            let job = jobs::get_job(&db, job_id)?;
+            output::print(&serde_json::json!({"job": job, "transfers": transfers}), cli.json);
         }
-        SlskdCmd::Status { username, id } => {
-            let transfer = slskd_q::transfer_status(&client, username, id)?;
-            output::print(&transfer, cli.json);
+        SlskdCmd::Status { target } => {
+            let db = jobs::open(&cfg.paths.database)?;
+            let job = jobs::resolve_target(&db, target)?;
+            let files = jobs::get_job_files(&db, job.id)?;
+            output::print(&serde_json::json!({"job": job, "files": files}), cli.json);
         }
-        SlskdCmd::Cancel {
-            username,
-            id,
-            remove,
-        } => {
-            slskd_q::cancel_transfer(&client, username, id, *remove)?;
-            output::print(&serde_json::json!({"cancelled": true}), cli.json);
+        SlskdCmd::Cancel { target, remove } => {
+            let db = jobs::open(&cfg.paths.database)?;
+            let job = jobs::resolve_target(&db, target)?;
+            let files = jobs::get_job_files(&db, job.id)?;
+            let mut cancelled_any = false;
+            for f in &files {
+                if slskd_q::is_terminal_state(&f.state) {
+                    continue;
+                }
+                cancelled_any = true;
+                slskd_q::cancel_transfer(&client, &job.username, &f.transfer_id, *remove)?;
+                let transfer = slskd_q::transfer_status(&client, &job.username, &f.transfer_id)?;
+                jobs::upsert_job_file(&db, job.id, std::path::Path::new(&job.local_dir), &transfer)?;
+            }
+            let files = jobs::get_job_files(&db, job.id)?;
+            // Only overwrite job.status if something was actually cancelled here —
+            // otherwise a no-op cancel on an already-terminal job would clobber a
+            // downstream status like "postfixed" back to a raw fetch-outcome label.
+            if cancelled_any {
+                let states: Vec<&str> = files.iter().map(|f| return f.state.as_str()).collect();
+                jobs::set_job_status(&db, job.id, jobs::derive_status_from_states(&states))?;
+            }
+            let job = jobs::get_job(&db, job.id)?;
+            output::print(&serde_json::json!({"job": job, "files": files}), cli.json);
         }
         SlskdCmd::Browse { username, directory } => {
             let dirs = slskd_q::browse_directory(&client, username, directory)?;
