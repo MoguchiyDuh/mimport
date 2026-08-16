@@ -46,6 +46,34 @@ pub enum Command {
         #[arg(long)]
         dry_run: bool,
     },
+
+    #[command(subcommand)]
+    Library(LibraryCmd),
+}
+
+/// See DESIGN.md §9 for the full `field:value`/`~fuzzy`/`lo..hi`/`-negate`
+/// query grammar. Query terms are trailing args, one shell token per clause
+/// (no re-splitting — quote a multi-word `field:"..."` value the normal
+/// shell way); `--files`/`--` must come before them since a leading `-`/`^`
+/// on a term is itself query syntax (negation), not a flag.
+#[derive(Subcommand)]
+pub enum LibraryCmd {
+    /// Lists library_tracks rows matching every query clause (AND).
+    List {
+        #[arg(trailing_var_arg = true)]
+        query: Vec<String>,
+    },
+    /// Full metadata for one row by id.
+    Show { id: i64 },
+    /// Deletes matching rows from the index; --files also deletes the
+    /// underlying files from disk (best-effort — already-missing files
+    /// aren't an error).
+    Remove {
+        #[arg(long)]
+        files: bool,
+        #[arg(trailing_var_arg = true)]
+        query: Vec<String>,
+    },
 }
 
 #[derive(Subcommand)]

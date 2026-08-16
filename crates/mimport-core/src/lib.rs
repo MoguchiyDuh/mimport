@@ -4,6 +4,7 @@ pub mod config;
 pub mod error;
 pub mod import;
 pub mod jobs;
+pub mod library;
 pub mod lidarr;
 pub mod mb;
 pub mod postfix;
