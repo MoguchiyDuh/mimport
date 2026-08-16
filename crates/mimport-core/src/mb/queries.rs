@@ -32,7 +32,7 @@ pub fn release_group_releases(client: &MbClient, release_group_mbid: &str) -> Re
         "/release",
         &[
             ("release-group", release_group_mbid),
-            ("inc", "media+labels+recordings"),
+            ("inc", "media+labels+recordings+artist-credits"),
             ("limit", "100"),
         ],
     )?;
@@ -46,7 +46,7 @@ pub fn lookup_release_group(client: &MbClient, release_group_mbid: &str) -> Resu
 pub fn release_with_tracks(client: &MbClient, release_mbid: &str) -> Result<Release> {
     return client.get(
         &format!("/release/{release_mbid}"),
-        &[("inc", "media+labels+recordings")],
+        &[("inc", "media+labels+recordings+artist-credits")],
     );
 }
 

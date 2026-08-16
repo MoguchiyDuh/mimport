@@ -14,5 +14,6 @@ toml.workspace = true
 rusqlite.workspace = true
 lofty.workspace = true
 symphonia.workspace = true
+pathfinding.workspace = true
 tracing.workspace = true
 thiserror.workspace = true

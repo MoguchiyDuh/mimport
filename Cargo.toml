@@ -30,6 +30,7 @@ symphonia = { version = "0.6", default-features = false, features = [
     "ogg",
 ] }
 clap = { version = "4", features = ["derive"] }
+pathfinding = "4"
 tracing = "0.1"
 tracing-subscriber = "0.3"
 thiserror = "2"

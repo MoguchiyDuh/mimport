@@ -70,13 +70,51 @@ pub fn canonical_track_count(releases: &[NormalizedRelease]) -> Option<u32> {
     return Some(best.0);
 }
 
-fn normalize_title(title: &str) -> String {
+pub(crate) fn normalize_title(title: &str) -> String {
     return title
         .trim()
         .to_lowercase()
         .replace(['\u{2018}', '\u{2019}', '\u{2032}'], "'")
         .replace(['\u{201c}', '\u{201d}'], "\"")
         .replace(['\u{2013}', '\u{2014}'], "-");
+}
+
+fn levenshtein(a: &str, b: &str) -> usize {
+    let a: Vec<char> = a.chars().collect();
+    let b: Vec<char> = b.chars().collect();
+    let (n, m) = (a.len(), b.len());
+    if n == 0 {
+        return m;
+    }
+    if m == 0 {
+        return n;
+    }
+    let mut prev: Vec<usize> = (0..=m).collect();
+    let mut curr = vec![0usize; m + 1];
+    for i in 1..=n {
+        curr[0] = i;
+        for j in 1..=m {
+            let cost = if a[i - 1] == b[j - 1] { 0 } else { 1 };
+            curr[j] = (prev[j] + 1).min(curr[j - 1] + 1).min(prev[j - 1] + cost);
+        }
+        std::mem::swap(&mut prev, &mut curr);
+    }
+    return prev[m];
+}
+
+/// `1 - normalized Levenshtein distance`, on top of [`normalize_title`]'s
+/// quote/dash/case normalization. Shared between §8 track matching
+/// (`import.rs`) and the §9 library query language's `~fuzzy` terms
+/// (`library.rs`) — one text-similarity notion for the whole crate.
+pub(crate) fn text_similarity(a: &str, b: &str) -> f64 {
+    let a = normalize_title(a);
+    let b = normalize_title(b);
+    let max_len = a.chars().count().max(b.chars().count());
+    if max_len == 0 {
+        return 1.0;
+    }
+    let dist = levenshtein(&a, &b);
+    return 1.0 - (dist as f64 / max_len as f64);
 }
 
 pub fn canonical_track_titles(releases: &[NormalizedRelease]) -> BTreeSet<String> {

@@ -34,9 +34,17 @@ pub enum Command {
     },
 
     Import {
+        /// job id, jobs.title, or a raw filesystem path (ad hoc, outside job tracking)
         target: String,
+        /// MB release mbid to match against (mimport always knows this from the
+        /// earlier `lidarr album`/`mb album` scoring step; not persisted anywhere)
+        #[arg(long)]
+        release: String,
+        /// {"<file path>": <track position>} mapping that bypasses Munkres matching entirely
         #[arg(long)]
         force: Option<PathBuf>,
+        #[arg(long)]
+        dry_run: bool,
     },
 }
 
