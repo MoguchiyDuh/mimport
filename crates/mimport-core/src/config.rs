@@ -13,6 +13,8 @@ pub struct Config {
     pub quality: QualityConfig,
     #[serde(default)]
     pub scoring: Scoring,
+    #[serde(default)]
+    pub cover_art: CoverArtConfig,
 }
 
 #[derive(Debug, Deserialize)]
@@ -49,6 +51,20 @@ pub struct LidarrConfig {
 }
 
 #[derive(Debug, Deserialize)]
+pub struct CoverArtConfig {
+    #[serde(default = "default_cover_art_base_url")]
+    pub base_url: String,
+}
+
+impl Default for CoverArtConfig {
+    fn default() -> Self {
+        return CoverArtConfig {
+            base_url: default_cover_art_base_url(),
+        };
+    }
+}
+
+#[derive(Debug, Deserialize)]
 pub struct SlskdConfig {
     #[serde(default = "default_slskd_base_url")]
     pub base_url: String,
@@ -75,6 +91,9 @@ fn default_mb_base_url() -> String {
 }
 fn default_lidarr_base_url() -> String {
     return "https://api.lidarr.audio/api/v0.4".to_string();
+}
+fn default_cover_art_base_url() -> String {
+    return "https://coverartarchive.org".to_string();
 }
 fn default_mb_rate_limit() -> f64 {
     return 1.0;

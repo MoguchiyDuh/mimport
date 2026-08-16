@@ -2,6 +2,7 @@ mod cli;
 mod output;
 
 use clap::Parser;
+use mimport_core::coverart::CoverArtClient;
 use mimport_core::error::Error;
 use mimport_core::import;
 use mimport_core::jobs;
@@ -197,6 +198,9 @@ fn run_import(
     let raw_release = mb_q::release_with_tracks(&mb_client, release_mbid)?;
     let release = NormalizedRelease::from(raw_release);
 
+    let cover_client = CoverArtClient::new(&cfg.cover_art, &cfg.musicbrainz.user_agent)?;
+    let cover_art = cover_client.front_cover(&release.id)?;
+
     let locals = import::scan_local_tracks(&dir)?;
     let report = match force {
         Some(mapping_path) => import::apply_force_mapping(&locals, &release, mapping_path)?,
@@ -211,7 +215,7 @@ fn run_import(
             dry_run,
             library_root: cfg.paths.library.clone(),
         };
-        imported = import::write_and_copy(&report.matched, &release, &opts)?;
+        imported = import::write_and_copy(&report.matched, &release, &opts, cover_art.as_ref())?;
         if !dry_run {
             let db = jobs::open(&cfg.paths.database)?;
             // index each copy (job_id NULL for ad hoc path targets)
@@ -230,6 +234,7 @@ fn run_import(
             "job": job,
             "release": release.id,
             "blocked": blocked,
+            "cover_art": cover_art.is_some(),
             "matched": report.matched,
             "unmatched_files": report.unmatched_files,
             "missing_tracks": report.missing_tracks,

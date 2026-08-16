@@ -1,6 +1,7 @@
 pub mod audio;
 pub mod cache;
 pub mod config;
+pub mod coverart;
 pub mod error;
 pub mod import;
 pub mod jobs;
