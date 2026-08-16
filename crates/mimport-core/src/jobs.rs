@@ -77,14 +77,12 @@ fn ensure_schema(conn: &Connection) -> Result<()> {
     return Ok(());
 }
 
-/// The local directory slskd will place a fetch's files under, by observed
-/// convention: `<downloads_root>/<basename of the remote directory>`.
+/// `<downloads_root>/<basename of the remote directory>`.
 pub fn local_dir_for(downloads_root: &Path, remote_directory: &str) -> PathBuf {
     let basename = remote_directory.rsplit('\\').next().unwrap_or(remote_directory);
     return downloads_root.join(basename);
 }
 
-/// Default `jobs.title` when `--title` isn't given: same basename used for `local_dir`.
 pub fn default_title(remote_directory: &str) -> String {
     return remote_directory
         .rsplit('\\')
@@ -124,9 +122,6 @@ pub fn set_job_status(conn: &Connection, job_id: i64, status: &str) -> Result<()
     return Ok(());
 }
 
-/// Insert-or-update a job's file row keyed by (job_id, transfer_id), computing
-/// `local_path` from the job's `local_dir` and the transfer's remote filename.
-/// Safe to call repeatedly as a transfer's state changes during polling.
 pub fn upsert_job_file(conn: &Connection, job_id: i64, local_dir: &Path, transfer: &Transfer) -> Result<()> {
     let basename = split_remote_path(&transfer.filename).1;
     let local_path = local_dir.join(basename);
@@ -171,9 +166,7 @@ pub fn get_job_files(conn: &Connection, job_id: i64) -> Result<Vec<JobFile>> {
     return Ok(rows);
 }
 
-/// Resolves a job-scoped command target: a numeric string is a job id
-/// lookup; anything else matches `jobs.title` exactly, most-recent (highest
-/// id) wins on multiple hits.
+/// Numeric string = job id; otherwise exact `jobs.title` match, most-recent wins.
 pub fn resolve_target(conn: &Connection, target: &str) -> Result<Job> {
     if let Ok(id) = target.parse::<i64>() {
         return get_job(conn, id);
@@ -218,13 +211,11 @@ fn row_to_job_file(row: &rusqlite::Row) -> rusqlite::Result<JobFile> {
     });
 }
 
-/// Aggregates a completed batch of terminal `Transfer` states into a job status.
 pub fn derive_status(transfers: &[Transfer]) -> &'static str {
     let states: Vec<&str> = transfers.iter().map(|t| return t.state.as_str()).collect();
     return derive_status_from_states(&states);
 }
 
-/// Same aggregation, from raw state strings (e.g. `JobFile::state` after a cancel).
 pub fn derive_status_from_states(states: &[&str]) -> &'static str {
     if states.is_empty() {
         return STATUS_INCOMPLETE;

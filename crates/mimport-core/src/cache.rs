@@ -1,6 +1,4 @@
-//! Shared disk cache for both backends: JSON response bodies keyed by a hash of the
-//! request URL, with a TTL. Deliberately dumb — no ETags, no conditional requests, just
-//! "is this file older than TTL seconds."
+//! Shared disk cache: JSON bodies keyed by URL hash, with a TTL.
 
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};

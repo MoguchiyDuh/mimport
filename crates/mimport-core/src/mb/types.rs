@@ -120,8 +120,7 @@ pub struct ArtistCreditItem {
     pub join_phrase: String,
 }
 
-/// Joins MB's artist-credit array into a single display string, honoring each
-/// item's `joinphrase` (e.g. `"Foo"` + `" & "` + `"Bar"` -> `"Foo & Bar"`).
+/// Joins the artist-credit array into one display string.
 pub fn join_artist_credit(credits: &[ArtistCreditItem]) -> Option<String> {
     if credits.is_empty() {
         return None;

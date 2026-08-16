@@ -136,11 +136,8 @@ pub fn is_terminal_state(state: &str) -> bool {
         || state.contains("Rejected");
 }
 
-/// Enqueues `files` and polls each to a terminal state. `on_update` is called
-/// with every observed `Transfer` (including the initial post-enqueue state
-/// and every subsequent poll) so a caller can persist progress incrementally
-/// — it still runs, and its result still propagates, even on a timeout below,
-/// so callers see the last-known state of every transfer either way.
+/// Enqueues `files` and polls each to a terminal state; `on_update` fires on
+/// every observed `Transfer` so progress persists even on timeout.
 pub fn fetch_and_wait(
     client: &SlskdClient,
     cfg: &SlskdConfig,

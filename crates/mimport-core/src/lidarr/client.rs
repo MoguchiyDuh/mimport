@@ -1,8 +1,4 @@
-//! `api.lidarr.audio` proxy client. Confirmed live (2026-08-10): no UA requirement, no
-//! auth, `X-RateLimit-*` headers are noise (non-monotonic, split across canary/internal
-//! backend pools — do not drive pacing off them). Real failure mode is a bare `HTTP 500`
-//! once concurrency exceeds ~10-15 parallel requests, with no `Retry-After`. This client
-//! stays strictly serial (a mutex-guarded pace gate) and retries 500/502/503/504.
+//! `api.lidarr.audio` proxy client. Serial pacing; retries 500/502/503/504.
 
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -21,9 +17,7 @@ pub struct LidarrClient {
     pace: Mutex<Instant>,
 }
 
-/// Self-imposed courtesy pacing — not derived from any header (they're unreliable), just
-/// a conservative fixed floor so mimport never contributes to the concurrency that
-/// triggers bare 500s.
+/// Fixed pacing floor; the backend 500s under concurrency.
 const MIN_INTERVAL: Duration = Duration::from_millis(350);
 
 impl LidarrClient {
@@ -81,9 +75,7 @@ impl LidarrClient {
                 return Ok(resp.text()?);
             }
 
-            // 500 is this backend's actual overload signal (confirmed live under
-            // concurrency), not a client bug — treat it as retryable alongside the
-            // standard gateway codes.
+            // bare 500 is this backend's overload signal — retryable
             let retryable = matches!(status.as_u16(), 500 | 502 | 503 | 504);
             if !retryable || attempt > self.max_retries {
                 let body = resp.text().unwrap_or_default();

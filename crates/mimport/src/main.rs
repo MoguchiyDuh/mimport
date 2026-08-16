@@ -145,9 +145,7 @@ fn run_mb(cli: &Cli, cfg: &Config, cmd: &MbCmd) -> mimport_core::Result<()> {
 }
 
 /// Numeric id or a jobs.title match takes precedence; an existing filesystem
-/// path not matching either is operated on ad hoc, outside job tracking, per
-/// DESIGN.md §5. Shared by every job-scoped command that also accepts a raw
-/// path (`postfix`, `import`).
+/// path not matching either is operated on ad hoc, outside job tracking.
 fn resolve_job_or_path(cfg: &Config, target: &str) -> mimport_core::Result<(Option<jobs::Job>, std::path::PathBuf)> {
     let as_path = std::path::Path::new(target);
     let is_numeric = target.parse::<i64>().is_ok();
@@ -205,9 +203,6 @@ fn run_import(
         None => import::match_tracks(&locals, &release),
     };
 
-    // A forced mapping bypasses the missing/unmatched block entirely, per
-    // Lidarr's manual-import fallback (RESEARCH.md 2026-08-10 §4) — the human
-    // already took responsibility for whatever they left out of it.
     let blocked = force.is_none() && report.blocked();
     let mut imported: Vec<import::ImportedFile> = Vec::new();
     let mut job = job;
@@ -219,8 +214,7 @@ fn run_import(
         imported = import::write_and_copy(&report.matched, &release, &opts)?;
         if !dry_run {
             let db = jobs::open(&cfg.paths.database)?;
-            // §9: every copy just written gets a library_tracks row, job-scoped
-            // or not (an ad hoc path target still gets indexed with job_id NULL).
+            // index each copy (job_id NULL for ad hoc path targets)
             for (m, f) in report.matched.iter().zip(imported.iter()) {
                 library::insert_track(&db, job.as_ref().map(|j| return j.id), &release, m, f)?;
             }

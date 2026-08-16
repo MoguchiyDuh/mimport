@@ -1,6 +1,4 @@
-//! Direct MusicBrainz HTTP client. Confirmed live (2026-08-10): UA is mandatory (503
-//! without one), `X-RateLimit-*` is real and decrementing (unlike the lidarr proxy) —
-//! self-paced limiter here is a courtesy floor, not a workaround for a broken counter.
+//! Direct MusicBrainz HTTP client.
 
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -59,8 +57,7 @@ impl MbClient {
         });
     }
 
-    /// GET `{base_url}{path}?fmt=json&{extra_query}`, cached, rate-limited, retried on
-    /// 429/502/503/504 with exponential backoff.
+    /// GET, cached + rate-limited, retried on 429/502/503/504.
     pub fn get<T: DeserializeOwned>(&self, path: &str, extra_query: &[(&str, &str)]) -> Result<T> {
         let mut url = format!("{}{}?fmt=json", self.base_url, path);
         for (k, v) in extra_query {

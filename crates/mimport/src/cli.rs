@@ -36,8 +36,7 @@ pub enum Command {
     Import {
         /// job id, jobs.title, or a raw filesystem path (ad hoc, outside job tracking)
         target: String,
-        /// MB release mbid to match against (mimport always knows this from the
-        /// earlier `lidarr album`/`mb album` scoring step; not persisted anywhere)
+        /// MB release mbid to match against
         #[arg(long)]
         release: String,
         /// {"<file path>": <track position>} mapping that bypasses Munkres matching entirely
@@ -51,11 +50,8 @@ pub enum Command {
     Library(LibraryCmd),
 }
 
-/// See DESIGN.md §9 for the full `field:value`/`~fuzzy`/`lo..hi`/`-negate`
-/// query grammar. Query terms are trailing args, one shell token per clause
-/// (no re-splitting — quote a multi-word `field:"..."` value the normal
-/// shell way); `--files`/`--` must come before them since a leading `-`/`^`
-/// on a term is itself query syntax (negation), not a flag.
+/// Query terms are trailing args, one shell token per clause; `--files`/`--`
+/// must come before them (a leading `-`/`^` on a term is negation, not a flag).
 #[derive(Subcommand)]
 pub enum LibraryCmd {
     /// Lists library_tracks rows matching every query clause (AND).

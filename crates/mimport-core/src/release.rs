@@ -14,9 +14,7 @@ pub struct NormalizedRelease {
     pub formats: Vec<String>,
     pub track_count: u32,
     pub date: Option<String>,
-    /// Release-level artist credit, joined (e.g. `"Foo & Bar"`). Only populated
-    /// via the MB-direct backend (`inc=artist-credits`) — the Lidarr proxy has
-    /// no artist field anywhere in the album/release payload.
+    /// Release-level artist credit; `None` from the Lidarr proxy (no artist field).
     pub artist_credit: Option<String>,
     pub tracks: Vec<NormalizedTrack>,
 }
@@ -39,9 +37,7 @@ pub struct NormalizedTrack {
 }
 
 impl NormalizedRelease {
-    /// Leading `YYYY` off `date` (MB dates are `YYYY`, `YYYY-MM`, or
-    /// `YYYY-MM-DD`; Lidarr's `releaseDate` is a full ISO timestamp — both
-    /// split cleanly on the first `-`). `None` if `date` itself is `None`.
+    /// First `-`-delimited component of `date` (the year), or `None`.
     pub fn year(&self) -> Option<&str> {
         return self.date.as_deref().and_then(|d| return d.split('-').next());
     }
