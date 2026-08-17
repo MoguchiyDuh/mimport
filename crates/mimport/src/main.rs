@@ -11,6 +11,7 @@ use mimport_core::lidarr::{queries as lidarr_q, LidarrClient};
 use mimport_core::mb::{queries as mb_q, MbClient};
 use mimport_core::postfix;
 use mimport_core::release::{NormalizedRelease, NormalizedReleaseGroup, NormalizedTrack};
+use mimport_core::tags;
 use mimport_core::scorer::{self, ScoreContext};
 use mimport_core::slskd::{queries as slskd_q, SlskdClient};
 use mimport_core::yt;
@@ -44,8 +45,35 @@ fn run(cli: &Cli) -> mimport_core::Result<()> {
             target,
             release,
             force,
+            tags,
+            artist,
+            album,
+            date,
+            label,
+            genre,
+            cover,
+            track_title,
+            allow_native,
             dry_run,
-        } => run_import(cli, &cfg, target, release, force.as_deref(), *dry_run),
+        } => run_import(
+            cli,
+            &cfg,
+            target,
+            release,
+            ImportFlags {
+                force: force.as_deref(),
+                tags: tags.as_deref(),
+                artist: artist.clone(),
+                album: album.clone(),
+                date: date.clone(),
+                label: label.clone(),
+                genre: genre.clone(),
+                cover: cover.clone(),
+                track_title,
+                allow_native: *allow_native,
+                dry_run: *dry_run,
+            },
+        ),
         Command::Library(cmd) => run_library(cli, &cfg, cmd),
         Command::Yt(cmd) => run_yt(cli, &cfg, cmd),
     }
@@ -186,39 +214,70 @@ fn run_postfix(cli: &Cli, cfg: &Config, target: &str, dry_run: bool) -> mimport_
     return Ok(());
 }
 
-fn run_import(
-    cli: &Cli,
-    cfg: &Config,
-    target: &str,
-    release_mbid: &str,
-    force: Option<&std::path::Path>,
+struct ImportFlags<'a> {
+    force: Option<&'a std::path::Path>,
+    tags: Option<&'a std::path::Path>,
+    artist: Option<String>,
+    album: Option<String>,
+    date: Option<String>,
+    label: Option<String>,
+    genre: Option<String>,
+    cover: Option<std::path::PathBuf>,
+    track_title: &'a [String],
+    allow_native: bool,
     dry_run: bool,
-) -> mimport_core::Result<()> {
+}
+
+fn run_import(cli: &Cli, cfg: &Config, target: &str, release_mbid: &str, flags: ImportFlags) -> mimport_core::Result<()> {
     let (job, dir) = resolve_job_or_path(cfg, target)?;
 
     let mb_client = MbClient::new(&cfg.musicbrainz)?;
     let raw_release = mb_q::release_with_tracks(&mb_client, release_mbid)?;
-    let release = NormalizedRelease::from(raw_release);
+    let mut release = NormalizedRelease::from(raw_release);
 
-    let cover_client = CoverArtClient::new(&cfg.cover_art, &cfg.musicbrainz.user_agent)?;
-    let cover_art = cover_client.front_cover(&release.id)?;
+    let mut overrides = match flags.tags {
+        Some(path) => tags::TagOverrides::load(path)?,
+        None => tags::TagOverrides::default(),
+    };
+    overrides.apply_flag_overrides(tags::FlagOverrides {
+        artist: flags.artist,
+        album: flags.album,
+        date: flags.date,
+        label: flags.label,
+        genre: flags.genre,
+        cover: flags.cover.clone(),
+        track_titles: flags.track_title,
+    })?;
+
+    let unresolved = tags::resolve(&mb_client, &mut release, &overrides);
+    if !unresolved.is_empty() && !flags.allow_native {
+        return Err(Error::UnresolvedTitles(tags::format_unresolved(&unresolved)));
+    }
+
+    let cover_art = match &overrides.cover {
+        Some(path) => Some(mimport_core::coverart::from_local_file(path)?),
+        None => {
+            let cover_client = CoverArtClient::new(&cfg.cover_art, &cfg.musicbrainz.user_agent)?;
+            cover_client.front_cover(&release.id)?
+        }
+    };
 
     let locals = import::scan_local_tracks(&dir)?;
-    let report = match force {
+    let report = match flags.force {
         Some(mapping_path) => import::apply_force_mapping(&locals, &release, mapping_path)?,
         None => import::match_tracks(&locals, &release),
     };
 
-    let blocked = force.is_none() && report.blocked();
+    let blocked = flags.force.is_none() && report.blocked();
     let mut imported: Vec<import::ImportedFile> = Vec::new();
     let mut job = job;
     if !blocked {
         let opts = import::ImportOptions {
-            dry_run,
+            dry_run: flags.dry_run,
             library_root: cfg.paths.library.clone(),
         };
         imported = import::write_and_copy(&report.matched, &release, &opts, cover_art.as_ref())?;
-        if !dry_run {
+        if !flags.dry_run {
             let db = jobs::open(&cfg.paths.database)?;
             // index each copy (job_id NULL for ad hoc path targets)
             for (m, f) in report.matched.iter().zip(imported.iter()) {
@@ -343,6 +402,11 @@ fn run_yt(cli: &Cli, cfg: &Config, cmd: &YtCmd) -> mimport_core::Result<()> {
                 track_count: 0,
                 date: year.clone(),
                 artist_credit: artist.clone(),
+                artist_credit_parts: Vec::new(),
+                release_group_id: None,
+                title_native: None,
+                artist_credit_native: None,
+                genre: None,
                 tracks: Vec::new(),
             };
             (synthetic, None)
@@ -366,6 +430,7 @@ fn run_yt(cli: &Cli, cfg: &Config, cmd: &YtCmd) -> mimport_core::Result<()> {
         position: final_track,
         medium_position: final_disc,
         title: final_title,
+        title_native: None,
         recording_id,
         distance: 0.0,
         reasons: std::collections::BTreeMap::new(),

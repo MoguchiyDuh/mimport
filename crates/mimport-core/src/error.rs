@@ -118,6 +118,15 @@ pub enum Error {
 
     #[error("`yt fetch` needs a title: pass --title, or --release/--track to backfill one")]
     YtTitleRequired,
+
+    #[error("release has non-Latin fields with no MusicBrainz romanization alias; supply --tags/--track-title or pass --allow-native:\n{0}")]
+    UnresolvedTitles(String),
+
+    #[error("--tags file invalid: {0}")]
+    TagOverrides(String),
+
+    #[error("failed to preprocess cover image at {path}: {reason}")]
+    CoverPreprocess { path: PathBuf, reason: String },
 }
 
 impl Error {

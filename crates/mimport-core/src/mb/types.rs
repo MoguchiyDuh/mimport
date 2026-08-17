@@ -49,6 +49,13 @@ pub struct Release {
     pub label_info: Vec<LabelInfo>,
     #[serde(rename = "artist-credit", default)]
     pub artist_credit: Vec<ArtistCreditItem>,
+    #[serde(rename = "release-group")]
+    pub release_group: Option<ReleaseGroupRef>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct ReleaseGroupRef {
+    pub id: String,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -118,6 +125,28 @@ pub struct ArtistCreditItem {
     pub name: String,
     #[serde(rename = "joinphrase", default)]
     pub join_phrase: String,
+    pub artist: ArtistCreditArtist,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct ArtistCreditArtist {
+    pub id: String,
+}
+
+/// One MusicBrainz alias entry; used to find editor-curated romanizations.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct Alias {
+    pub name: String,
+    pub locale: Option<String>,
+    #[serde(rename = "type")]
+    pub alias_type: Option<String>,
+    pub primary: Option<bool>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct AliasResponse {
+    #[serde(default)]
+    pub aliases: Vec<Alias>,
 }
 
 /// Joins the artist-credit array into one display string.
