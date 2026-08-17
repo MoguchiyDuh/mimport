@@ -5,9 +5,10 @@ use std::path::{Path, PathBuf};
 
 use lofty::config::WriteOptions;
 use lofty::file::{AudioFile, TaggedFileExt};
+use lofty::ogg::{OggPictureStorage, VorbisComments};
 use lofty::picture::{MimeType, Picture, PictureType};
 use lofty::probe::read_from_path;
-use lofty::tag::{Accessor, ItemKey, Tag};
+use lofty::tag::{Accessor, ItemKey, Tag, TagExt, TagType};
 use pathfinding::prelude::{kuhn_munkres_min, Matrix};
 use serde::{Deserialize, Serialize};
 
@@ -454,6 +455,15 @@ pub fn write_and_copy(matched: &[MatchedTrack], release: &NormalizedRelease, opt
 }
 
 /// Writes a fresh tag, not a patch onto whatever the source carried.
+///
+/// VorbisComments (FLAC + Ogg/Opus, i.e. this whole library) is written
+/// directly rather than through lofty's generic `ItemKey`-mapped `Tag`:
+/// `ItemKey::OriginalArtist`/`OriginalAlbumTitle` have no VorbisComments
+/// mapping in lofty (`ItemKey::map_key` returns `&'static str`, so even
+/// `ItemKey::Unknown` can never map to one), so anything routed through the
+/// generic `Tag` for those two fields is silently dropped on save. Native
+/// (CJK/etc) artist/album titles ride in raw `ORIGINALARTIST`/
+/// `ORIGINALALBUMTITLE` vorbis fields instead.
 fn write_tags(path: &Path, m: &MatchedTrack, release: &NormalizedRelease, cover_art: Option<&CoverArt>) -> Result<()> {
     let mut tagged = read_from_path(path).map_err(|e| {
         return Error::Probe {
@@ -461,7 +471,13 @@ fn write_tags(path: &Path, m: &MatchedTrack, release: &NormalizedRelease, cover_
             reason: e.to_string(),
         };
     })?;
-    let mut tag = Tag::new(tagged.primary_tag_type());
+    let tag_type = tagged.primary_tag_type();
+
+    if tag_type == TagType::VorbisComments {
+        return write_vorbis_tags(path, m, release, cover_art);
+    }
+
+    let mut tag = Tag::new(tag_type);
 
     tag.set_title(m.title.clone());
     tag.set_album(release.title.clone());
@@ -473,14 +489,7 @@ fn write_tags(path: &Path, m: &MatchedTrack, release: &NormalizedRelease, cover_
     } else if let Some(raw) = raw_position_for(m, release) {
         let _ = tag.insert_text(ItemKey::TrackNumber, raw);
     }
-    let disc_total = match m.medium_position {
-        Some(disc) => release
-            .tracks
-            .iter()
-            .filter(|t| return t.medium_position == Some(disc))
-            .count(),
-        None => release.track_count as usize,
-    };
+    let disc_total = disc_total_for(m, release);
     if disc_total > 0 {
         tag.set_track_total(disc_total as u32);
     }
@@ -501,8 +510,6 @@ fn write_tags(path: &Path, m: &MatchedTrack, release: &NormalizedRelease, cover_
     if let Some(id) = &m.recording_id {
         let _ = tag.insert_text(ItemKey::MusicBrainzRecordingId, id.clone());
     }
-    // Native script preserved: lofty has no OriginalTrackTitle frame (ID3 lacks one),
-    // so that one field rides in Comment; artist/album have dedicated frames.
     if let Some(native) = &release.artist_credit_native {
         let _ = tag.insert_text(ItemKey::OriginalArtist, native.clone());
     }
@@ -527,6 +534,82 @@ fn write_tags(path: &Path, m: &MatchedTrack, release: &NormalizedRelease, cover_
 
     let _ = tagged.insert_tag(tag);
     tagged.save_to_path(path, WriteOptions::default()).map_err(|e| {
+        return Error::Probe {
+            path: path.to_path_buf(),
+            reason: e.to_string(),
+        };
+    })?;
+    return Ok(());
+}
+
+fn disc_total_for(m: &MatchedTrack, release: &NormalizedRelease) -> usize {
+    return match m.medium_position {
+        Some(disc) => release
+            .tracks
+            .iter()
+            .filter(|t| return t.medium_position == Some(disc))
+            .count(),
+        None => release.track_count as usize,
+    };
+}
+
+fn write_vorbis_tags(path: &Path, m: &MatchedTrack, release: &NormalizedRelease, cover_art: Option<&CoverArt>) -> Result<()> {
+    let mut vc = VorbisComments::new();
+
+    vc.set_title(m.title.clone());
+    vc.set_album(release.title.clone());
+    if let Some(artist) = &release.artist_credit {
+        vc.set_artist(artist.clone());
+    }
+    if let Some(pos) = m.position {
+        vc.set_track(pos);
+    } else if let Some(raw) = raw_position_for(m, release) {
+        vc.insert("TRACKNUMBER".to_string(), raw);
+    }
+    let disc_total = disc_total_for(m, release);
+    if disc_total > 0 {
+        vc.set_track_total(disc_total as u32);
+    }
+    if let Some(disc) = m.medium_position {
+        vc.set_disk(disc);
+    }
+    if let Some(date) = &release.date
+        && !date.is_empty()
+    {
+        vc.insert("DATE".to_string(), date.clone());
+    }
+    if let Some(label) = &release.label {
+        vc.insert("LABEL".to_string(), label.clone());
+    }
+    if let Some(genre) = &release.genre {
+        vc.set_genre(genre.clone());
+    }
+    if let Some(id) = &m.recording_id {
+        vc.insert("MUSICBRAINZ_TRACKID".to_string(), id.clone());
+    }
+    if let Some(native) = &release.artist_credit_native {
+        vc.insert("ORIGINALARTIST".to_string(), native.clone());
+    }
+    if let Some(native) = &release.title_native {
+        vc.insert("ORIGINALALBUMTITLE".to_string(), native.clone());
+    }
+    if let Some(native) = &m.title_native {
+        vc.insert("COMMENT".to_string(), format!("Original title: {native}"));
+    }
+    // release.id may be a non-mbid sentinel (yt fetch with no --release backfill)
+    if looks_like_mbid(&release.id) {
+        vc.insert("MUSICBRAINZ_ALBUMID".to_string(), release.id.clone());
+    }
+
+    if let Some(ca) = cover_art {
+        let picture = Picture::unchecked(ca.bytes.clone())
+            .pic_type(PictureType::CoverFront)
+            .mime_type(MimeType::from_str(&ca.mime))
+            .build();
+        let _ = vc.insert_picture(picture, None);
+    }
+
+    vc.save_to_path(path, WriteOptions::default()).map_err(|e| {
         return Error::Probe {
             path: path.to_path_buf(),
             reason: e.to_string(),
