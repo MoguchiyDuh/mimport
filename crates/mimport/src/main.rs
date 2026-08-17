@@ -342,7 +342,6 @@ fn run_yt(cli: &Cli, cfg: &Config, cmd: &YtCmd) -> mimport_core::Result<()> {
         release,
         playlist,
         tags,
-        cover,
         allow_native,
         dry_run,
     } = cmd;
@@ -355,7 +354,6 @@ fn run_yt(cli: &Cli, cfg: &Config, cmd: &YtCmd) -> mimport_core::Result<()> {
             YtPlaylistFlags {
                 release: release.as_deref(),
                 tags: tags.as_deref(),
-                cover: cover.as_deref(),
                 allow_native: *allow_native,
                 dry_run: *dry_run,
             },
@@ -370,7 +368,27 @@ fn run_yt(cli: &Cli, cfg: &Config, cmd: &YtCmd) -> mimport_core::Result<()> {
             let position = track.ok_or(Error::YtReleaseNeedsTrack)?;
             let mb_client = MbClient::new(&cfg.musicbrainz)?;
             let raw = mb_q::release_with_tracks(&mb_client, mbid)?;
-            let norm = NormalizedRelease::from(raw);
+            let mut norm = NormalizedRelease::from(raw);
+
+            // --tags/--allow-native only reach here with --release (clap `requires`).
+            let mut overrides = match tags {
+                Some(path) => tags::TagOverrides::load(path)?,
+                None => tags::TagOverrides::default(),
+            };
+            overrides.apply_flag_overrides(tags::FlagOverrides {
+                artist: artist.clone(),
+                album: album.clone(),
+                date: year.clone(),
+                label: None,
+                genre: None,
+                cover: None,
+                track_titles: &[],
+            })?;
+            let unresolved = tags::resolve(&mb_client, &mut norm, &overrides);
+            if !unresolved.is_empty() && !*allow_native {
+                return Err(Error::UnresolvedTitles(tags::format_unresolved(&unresolved)));
+            }
+
             let backfill_track = match *disc {
                 Some(d) => norm
                     .tracks
@@ -435,14 +453,22 @@ fn run_yt(cli: &Cli, cfg: &Config, cmd: &YtCmd) -> mimport_core::Result<()> {
         }
     };
 
+    // `--title` still wins over the (already resolved) backfill track title, so a
+    // manual per-video title override is possible without a --tags file.
     let final_title = title
         .clone()
         .or_else(|| return backfill.as_ref().map(|t| return t.title.clone()))
         .ok_or(Error::YtTitleRequired)?;
-    let final_artist = artist.clone().or_else(|| return norm_release.artist_credit.clone());
+    // In the --release path norm_release.artist_credit is already the resolved
+    // (override + romanization) artist; in the synthetic path it's the raw --artist.
+    let final_artist = norm_release.artist_credit.clone().or_else(|| return artist.clone());
     let final_track = track.or_else(|| return backfill.as_ref().and_then(|t| return t.position));
     let final_disc = disc.or_else(|| return backfill.as_ref().and_then(|t| return t.medium_position));
     let recording_id = backfill.as_ref().and_then(|t| return t.recording_id.clone());
+    let title_native = backfill
+        .as_ref()
+        .and_then(|t| return t.title_native.clone())
+        .filter(|_| return title.is_none());
 
     let mut norm_release = norm_release;
     norm_release.artist_credit = final_artist;
@@ -452,17 +478,23 @@ fn run_yt(cli: &Cli, cfg: &Config, cmd: &YtCmd) -> mimport_core::Result<()> {
         position: final_track,
         medium_position: final_disc,
         title: final_title,
-        title_native: None,
+        title_native,
         recording_id,
         distance: 0.0,
         reasons: std::collections::BTreeMap::new(),
     }];
 
+    // Cover art is always the YouTube thumbnail (no manual override for yt).
+    let cover_art = match &fetched.thumbnail {
+        Some(thumb) => Some(mimport_core::coverart::from_local_file(thumb)?),
+        None => None,
+    };
+
     let opts = import::ImportOptions {
         dry_run: *dry_run,
         library_root: cfg.paths.library.clone(),
     };
-    let imported = import::write_and_copy(&matched, &norm_release, &opts, None)?;
+    let imported = import::write_and_copy(&matched, &norm_release, &opts, cover_art.as_ref())?;
 
     if !dry_run {
         let db = jobs::open(&cfg.paths.database)?;
@@ -476,6 +508,7 @@ fn run_yt(cli: &Cli, cfg: &Config, cmd: &YtCmd) -> mimport_core::Result<()> {
             "yt_title": fetched.title,
             "yt_uploader": fetched.uploader,
             "release": if norm_release.id.is_empty() { None } else { Some(norm_release.id.clone()) },
+            "cover_art": cover_art.is_some(),
             "imported": imported,
         }),
         cli.json,
@@ -486,7 +519,6 @@ fn run_yt(cli: &Cli, cfg: &Config, cmd: &YtCmd) -> mimport_core::Result<()> {
 struct YtPlaylistFlags<'a> {
     release: Option<&'a str>,
     tags: Option<&'a Path>,
-    cover: Option<&'a Path>,
     allow_native: bool,
     dry_run: bool,
 }
@@ -497,7 +529,7 @@ fn run_yt_playlist(
     url: &str,
     flags: YtPlaylistFlags<'_>,
 ) -> mimport_core::Result<()> {
-    let release_mbid = flags.release.ok_or(Error::YtReleaseNeedsTrack)?;
+    let release_mbid = flags.release.ok_or(Error::YtPlaylistNeedsRelease)?;
     let fetched = yt::fetch(&cfg.yt, url, &cfg.paths.staging, true)?;
 
     let mb_client = MbClient::new(&cfg.musicbrainz)?;
@@ -514,7 +546,7 @@ fn run_yt_playlist(
         date: None,
         label: None,
         genre: None,
-        cover: flags.cover.map(|p| return p.to_path_buf()),
+        cover: None,
         track_titles: &[],
     })?;
 
@@ -523,27 +555,31 @@ fn run_yt_playlist(
         return Err(Error::UnresolvedTitles(tags::format_unresolved(&unresolved)));
     }
 
-    let cover_art = match &overrides.cover {
-        Some(path) => Some(mimport_core::coverart::from_local_file(path)?),
-        None => match fetched.iter().find_map(|f| return f.thumbnail.as_ref()) {
-            Some(thumb) => Some(mimport_core::coverart::from_local_file(thumb)?),
-            None => None,
-        },
+    // Cover art is always the YouTube thumbnail; use the first entry that has one.
+    let cover_art = match fetched.iter().find_map(|f| return f.thumbnail.as_ref()) {
+        Some(thumb) => Some(mimport_core::coverart::from_local_file(thumb)?),
+        None => None,
     };
 
+    // yt is single-disc, so playlist_index maps straight onto track.position.
+    // Entries yt-dlp skipped (--ignore-errors) simply don't appear in `fetched`;
+    // a fetched entry whose index has no release track is warned and skipped
+    // rather than aborting the whole import.
     let mut matched: Vec<import::MatchedTrack> = Vec::new();
+    let mut skipped: Vec<u32> = Vec::new();
     for (idx, f) in fetched.iter().enumerate() {
         let position = f.playlist_index.unwrap_or_else(|| return (idx as u32) + 1);
-        let track = release
-            .tracks
-            .iter()
-            .find(|t| return t.position == Some(position))
-            .ok_or_else(|| {
-                return Error::YtTrackNotFound {
-                    release_mbid: release_mbid.to_string(),
-                    position,
-                };
-            })?;
+        let track = match release.tracks.iter().find(|t| return t.position == Some(position)) {
+            Some(t) => t,
+            None => {
+                tracing::warn!(
+                    "playlist entry {position} ({}) has no matching track in release {release_mbid}; skipping",
+                    f.video_id
+                );
+                skipped.push(position);
+                continue;
+            }
+        };
         matched.push(import::MatchedTrack {
             file: f.path.clone(),
             position: track.position,
@@ -575,6 +611,7 @@ fn run_yt_playlist(
             "release": release.id,
             "cover_art": cover_art.is_some(),
             "matched": matched,
+            "skipped_positions": skipped,
             "imported": imported,
         }),
         cli.json,

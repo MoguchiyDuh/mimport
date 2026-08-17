@@ -17,3 +17,15 @@ username = "CHANGE_ME"
 password = "CHANGE_ME"
 
 [quality]
+target_samplerate = 44100
+target_bitdepth = 16
+
+[cover_art]
+base_url = "https://coverartarchive.org"
+
+[yt]
+yt_dlp_path = "yt-dlp"
+
+# [scoring] omitted — every field has a hardcoded default (see
+# mimport-core/src/config.rs Scoring/StatusWeights/MediaWeights/etc.);
+# only add this section to override specific weights.

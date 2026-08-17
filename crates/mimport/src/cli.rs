@@ -125,8 +125,8 @@ pub enum YtCmd {
     /// title/artist/recording-id from a specific MB release track.
     ///
     /// With --playlist, fetch every entry (in playlist order) and map each to
-    /// its release track by position; requires --release. Cover art defaults
-    /// to the YouTube thumbnail.
+    /// its release track by position; requires --release. Unavailable entries
+    /// are skipped. Cover art is always the YouTube thumbnail.
     Fetch {
         url: String,
         #[arg(long)]
@@ -148,13 +148,13 @@ pub enum YtCmd {
         /// fetch the whole playlist/album instead of a single video
         #[arg(long)]
         playlist: bool,
-        /// JSON manual tag overrides (same schema as `import --tags`)
-        #[arg(long)]
+        /// JSON manual tag overrides (same schema as `import --tags`); applied
+        /// against the --release metadata, so it needs --release to be useful
+        #[arg(long, requires = "release")]
         tags: Option<PathBuf>,
-        /// local image to embed as cover art instead of the YouTube thumbnail
-        #[arg(long)]
-        cover: Option<PathBuf>,
-        #[arg(long)]
+        /// keep native (CJK/etc) script for any field with no romanization alias
+        /// or manual override, instead of blocking; needs --release
+        #[arg(long, requires = "release")]
         allow_native: bool,
         #[arg(long)]
         dry_run: bool,
