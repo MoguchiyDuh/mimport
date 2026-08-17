@@ -20,9 +20,11 @@ pub struct FetchedAudio {
 }
 
 /// Fetches a single video (`playlist == false`) or every entry in a playlist
-/// (`playlist == true`) as Opus into `staging_dir`. In playlist mode each
-/// entry's thumbnail is also written (converted to JPEG) so it can be used as
-/// cover art.
+/// (`playlist == true`) as Opus into `staging_dir`. Each entry's thumbnail is
+/// also written (converted to JPEG) so it can be used as cover art. In playlist
+/// mode `--ignore-errors` lets a dead/unavailable entry be skipped rather than
+/// aborting the whole batch — yt-dlp still emits a `--print` line per entry that
+/// did download, with its original `playlist_index` preserved.
 pub fn fetch(cfg: &YtConfig, url: &str, staging_dir: &Path, playlist: bool) -> Result<Vec<FetchedAudio>> {
     std::fs::create_dir_all(staging_dir).map_err(|e| return Error::io(staging_dir, e))?;
 
@@ -33,12 +35,13 @@ pub fn fetch(cfg: &YtConfig, url: &str, staging_dir: &Path, playlist: bool) -> R
 
     let mut cmd = Command::new(&cfg.yt_dlp_path);
     cmd.args(["-x", "--audio-format", "opus"])
+        .args(["--write-thumbnail", "--convert-thumbnails", "jpg"])
         .arg("-o")
         .arg(&out_template)
         .arg("--print")
         .arg(&print_template);
     if playlist {
-        cmd.args(["--write-thumbnail", "--convert-thumbnails", "jpg"]);
+        cmd.arg("--ignore-errors");
     } else {
         cmd.arg("--no-playlist");
     }
@@ -51,12 +54,23 @@ pub fn fetch(cfg: &YtConfig, url: &str, staging_dir: &Path, playlist: bool) -> R
         };
     })?;
 
-    if !output.status.success() {
+    // In playlist mode `--ignore-errors` makes yt-dlp exit non-zero whenever any
+    // entry failed, even if others downloaded fine — so a non-zero exit isn't
+    // fatal there; we parse whatever `--print` lines came back and only bail if
+    // that leaves us with nothing (the `tracks.is_empty()` check below). Single
+    // videos have no partial-success case, so a non-zero exit stays fatal.
+    if !output.status.success() && !playlist {
         return Err(Error::ToolFailed {
             tool: "yt-dlp",
             status: output.status.to_string(),
             stderr: String::from_utf8_lossy(&output.stderr).chars().take(600).collect(),
         });
+    }
+    if !output.status.success() {
+        tracing::warn!(
+            "yt-dlp reported failures on some playlist entries (exit {}); importing the ones that succeeded",
+            output.status
+        );
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -74,12 +88,8 @@ pub fn fetch(cfg: &YtConfig, url: &str, staging_dir: &Path, playlist: bool) -> R
             return if s == "NA" { None } else { Some(s.to_string()) };
         };
         let video_id = parts[1].to_string();
-        let thumbnail = if playlist {
-            let candidate = staging_dir.join(format!("{video_id}.jpg"));
-            if candidate.exists() { Some(candidate) } else { None }
-        } else {
-            None
-        };
+        let candidate = staging_dir.join(format!("{video_id}.jpg"));
+        let thumbnail = if candidate.exists() { Some(candidate) } else { None };
         tracks.push(FetchedAudio {
             path: PathBuf::from(parts[5]),
             video_id,

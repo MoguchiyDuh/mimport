@@ -110,6 +110,9 @@ pub enum Error {
     #[error("`yt fetch --release` requires `--track` to pick which release track to backfill from")]
     YtReleaseNeedsTrack,
 
+    #[error("`yt fetch --playlist` requires `--release <mbid>` to map playlist entries to tracks")]
+    YtPlaylistNeedsRelease,
+
     #[error("release {release_mbid} has no track at position {position}")]
     YtTrackNotFound { release_mbid: String, position: u32 },
 
