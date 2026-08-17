@@ -51,14 +51,19 @@ impl SlskdClient {
             });
         }
 
-        let session: SessionResponse = resp.json()?;
-        let mut guard = self.token.lock().expect("token mutex poisoned");
+        let text = resp.text()?;
+        let session: SessionResponse = serde_json::from_str(&text)?;
+        let mut guard = self.token.lock().unwrap_or_else(|e| return e.into_inner());
         *guard = Some(session.token.clone());
         return Ok(session.token);
     }
 
     fn cached_or_login(&self) -> Result<String> {
-        let cached = self.token.lock().expect("token mutex poisoned").clone();
+        let cached = self
+            .token
+            .lock()
+            .unwrap_or_else(|e| return e.into_inner())
+            .clone();
         if let Some(t) = cached {
             return Ok(t);
         }

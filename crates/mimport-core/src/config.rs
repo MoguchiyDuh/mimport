@@ -10,11 +10,14 @@ pub struct Config {
     pub musicbrainz: MbConfig,
     pub lidarr: LidarrConfig,
     pub slskd: SlskdConfig,
+    #[serde(default)]
     pub quality: QualityConfig,
     #[serde(default)]
     pub scoring: Scoring,
     #[serde(default)]
     pub cover_art: CoverArtConfig,
+    #[serde(default)]
+    pub yt: YtConfig,
 }
 
 #[derive(Debug, Deserialize)]
@@ -65,6 +68,20 @@ impl Default for CoverArtConfig {
 }
 
 #[derive(Debug, Deserialize)]
+pub struct YtConfig {
+    #[serde(default = "default_yt_dlp_path")]
+    pub yt_dlp_path: String,
+}
+
+impl Default for YtConfig {
+    fn default() -> Self {
+        return YtConfig {
+            yt_dlp_path: default_yt_dlp_path(),
+        };
+    }
+}
+
+#[derive(Debug, Deserialize)]
 pub struct SlskdConfig {
     #[serde(default = "default_slskd_base_url")]
     pub base_url: String,
@@ -86,6 +103,15 @@ pub struct QualityConfig {
     pub target_bitdepth: u16,
 }
 
+impl Default for QualityConfig {
+    fn default() -> Self {
+        return QualityConfig {
+            target_samplerate: default_samplerate(),
+            target_bitdepth: default_bitdepth(),
+        };
+    }
+}
+
 fn default_mb_base_url() -> String {
     return "https://musicbrainz.org/ws/2".to_string();
 }
@@ -94,6 +120,9 @@ fn default_lidarr_base_url() -> String {
 }
 fn default_cover_art_base_url() -> String {
     return "https://coverartarchive.org".to_string();
+}
+fn default_yt_dlp_path() -> String {
+    return "yt-dlp".to_string();
 }
 fn default_mb_rate_limit() -> f64 {
     return 1.0;
@@ -280,8 +309,8 @@ fn default_secondary_types() -> Vec<String> {
 pub struct BonusWeights {
     pub canonical_track_count: f64,
     pub label_present: f64,
-    pub legit_extra_track: f64,
-    pub legit_extra_track_cap: f64,
+    #[serde(default = "default_edition_bonus")]
+    pub edition_bonus: f64,
 }
 
 impl Default for BonusWeights {
@@ -289,10 +318,13 @@ impl Default for BonusWeights {
         return BonusWeights {
             canonical_track_count: 10.0,
             label_present: 8.0,
-            legit_extra_track: 100.0,
-            legit_extra_track_cap: 400.0,
+            edition_bonus: default_edition_bonus(),
         };
     }
+}
+
+fn default_edition_bonus() -> f64 {
+    return 15.0;
 }
 
 impl Config {
@@ -306,6 +338,17 @@ impl Config {
             return Err(Error::MbUserAgentUnset {
                 value: cfg.musicbrainz.user_agent,
             });
+        }
+        for (field, value) in [
+            ("username", &cfg.slskd.username),
+            ("password", &cfg.slskd.password),
+        ] {
+            if value.trim().is_empty() || value.contains("CHANGE_ME") {
+                return Err(Error::SlskdCredsUnset {
+                    field,
+                    value: value.clone(),
+                });
+            }
         }
         return Ok(cfg);
     }

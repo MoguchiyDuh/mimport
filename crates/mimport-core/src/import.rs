@@ -9,7 +9,7 @@ use lofty::picture::{MimeType, Picture, PictureType};
 use lofty::probe::read_from_path;
 use lofty::tag::{Accessor, ItemKey, Tag};
 use pathfinding::prelude::{kuhn_munkres_min, Matrix};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::coverart::CoverArt;
 use crate::error::{Error, Result};
@@ -292,28 +292,56 @@ pub fn match_tracks(locals: &[LocalTrack], release: &NormalizedRelease) -> Match
 
 /// Parses a `{"<file path>": <track position>}` mapping into a report,
 /// bypassing matching. Unmapped files/tracks still report unmatched/missing.
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum ForceTarget {
+    Pos(u32),
+    Full { position: u32, disc: Option<u32> },
+}
+
 pub fn apply_force_mapping(locals: &[LocalTrack], release: &NormalizedRelease, mapping_path: &Path) -> Result<MatchReport> {
     let text = std::fs::read_to_string(mapping_path).map_err(|e| return Error::io(mapping_path, e))?;
-    let mapping: BTreeMap<String, u32> =
+    let mapping: BTreeMap<String, ForceTarget> =
         serde_json::from_str(&text).map_err(|e| return Error::ForceMapping(format!("{}: {e}", mapping_path.display())))?;
 
     let mut matched = Vec::new();
     let mut matched_tracks: HashSet<usize> = HashSet::new();
     let mut matched_files: HashSet<PathBuf> = HashSet::new();
 
-    for (file_str, position) in &mapping {
+    for (file_str, target) in &mapping {
         let file_path = PathBuf::from(file_str);
         let local = locals.iter().find(|l| return l.path == file_path).ok_or_else(|| {
             return Error::ForceMapping(format!("{file_str:?} is not one of the scanned local files"));
         })?;
-        let (j, track) = release
-            .tracks
-            .iter()
-            .enumerate()
-            .find(|(_, t)| return t.position == Some(*position))
-            .ok_or_else(|| {
-                return Error::ForceMapping(format!("no track at position {position} in the release"));
-            })?;
+        let (position, disc) = match target {
+            ForceTarget::Pos(position) => (*position, None),
+            ForceTarget::Full { position, disc } => (*position, *disc),
+        };
+        let mut candidates = release.tracks.iter().enumerate().filter(|(_, t)| {
+            return t.position == Some(position)
+                && match disc {
+                    Some(d) => t.medium_position == Some(d),
+                    None => true,
+                };
+        });
+        let first = candidates.next();
+        let second = candidates.next();
+        let (j, track) = match (first, second) {
+            (Some((j, t)), None) => (j, t),
+            (Some(_), Some(_)) => {
+                return Err(Error::ForceMapping(format!(
+                    "position {position} is ambiguous across discs; specify a disc"
+                )));
+            }
+            (None, _) => {
+                return Err(Error::ForceMapping(format!("no track at position {position} in the release")));
+            }
+        };
+        if !matched_tracks.insert(j) {
+            return Err(Error::ForceMapping(format!(
+                "multiple files map to position {position} on disc {disc:?}"
+            )));
+        }
         matched.push(MatchedTrack {
             file: local.path.clone(),
             position: track.position,
@@ -323,7 +351,6 @@ pub fn apply_force_mapping(locals: &[LocalTrack], release: &NormalizedRelease, m
             distance: 0.0,
             reasons: BTreeMap::new(),
         });
-        matched_tracks.insert(j);
         matched_files.insert(local.path.clone());
     }
 
@@ -380,12 +407,18 @@ pub fn write_and_copy(matched: &[MatchedTrack], release: &NormalizedRelease, opt
     let mut out = Vec::with_capacity(matched.len());
     for m in matched {
         let ext = m.file.extension().and_then(|e| return e.to_str()).unwrap_or("");
-        let track_num = m.position.unwrap_or(0);
+        let track_prefix = match m.position {
+            Some(p) => format!("{p:02}"),
+            None => raw_position_for(m, release)
+                .map(|r| return sanitize(&r))
+                .filter(|s| return !s.is_empty())
+                .unwrap_or_else(|| return "00".to_string()),
+        };
         let filename = if multi_disc {
             let disc = m.medium_position.unwrap_or(1);
-            format!("{disc:02}-{track_num:02} - {}.{ext}", sanitize(&m.title))
+            format!("{disc:02}-{track_prefix} - {}.{ext}", sanitize(&m.title))
         } else {
-            format!("{track_num:02} - {}.{ext}", sanitize(&m.title))
+            format!("{track_prefix} - {}.{ext}", sanitize(&m.title))
         };
         let dest = opts.library_root.join(&artist_dir).join(&album_dir).join(filename);
 
@@ -399,6 +432,12 @@ pub fn write_and_copy(matched: &[MatchedTrack], release: &NormalizedRelease, opt
 
         if let Some(parent) = dest.parent() {
             std::fs::create_dir_all(parent).map_err(|e| return Error::io(parent, e))?;
+        }
+        if dest.exists() {
+            return Err(Error::io(
+                &dest,
+                std::io::Error::new(std::io::ErrorKind::AlreadyExists, "destination already exists"),
+            ));
         }
         std::fs::copy(&m.file, &dest).map_err(|e| return Error::io(&dest, e))?;
         write_tags(&dest, m, release, cover_art)?;
@@ -427,17 +466,38 @@ fn write_tags(path: &Path, m: &MatchedTrack, release: &NormalizedRelease, cover_
     }
     if let Some(pos) = m.position {
         tag.set_track(pos);
+    } else if let Some(raw) = raw_position_for(m, release) {
+        let _ = tag.insert_text(ItemKey::TrackNumber, raw);
     }
-    if release.track_count > 0 {
-        tag.set_track_total(release.track_count);
+    let disc_total = match m.medium_position {
+        Some(disc) => release
+            .tracks
+            .iter()
+            .filter(|t| return t.medium_position == Some(disc))
+            .count(),
+        None => release.track_count as usize,
+    };
+    if disc_total > 0 {
+        tag.set_track_total(disc_total as u32);
     }
     if let Some(disc) = m.medium_position {
         tag.set_disk(disc);
     }
+    if let Some(date) = &release.date {
+        if !date.is_empty() {
+            let _ = tag.insert_text(ItemKey::RecordingDate, date.clone());
+        }
+    }
+    if let Some(label) = &release.label {
+        let _ = tag.insert_text(ItemKey::Label, label.clone());
+    }
     if let Some(id) = &m.recording_id {
         let _ = tag.insert_text(ItemKey::MusicBrainzRecordingId, id.clone());
     }
-    let _ = tag.insert_text(ItemKey::MusicBrainzReleaseId, release.id.clone());
+    // release.id may be a non-mbid sentinel (yt fetch with no --release backfill)
+    if looks_like_mbid(&release.id) {
+        let _ = tag.insert_text(ItemKey::MusicBrainzReleaseId, release.id.clone());
+    }
 
     if let Some(ca) = cover_art {
         let picture = Picture::unchecked(ca.bytes.clone())
@@ -455,6 +515,23 @@ fn write_tags(path: &Path, m: &MatchedTrack, release: &NormalizedRelease, cover_
         };
     })?;
     return Ok(());
+}
+
+fn looks_like_mbid(s: &str) -> bool {
+    return s.len() == 36 && s.bytes().filter(|b| return *b == b'-').count() == 4;
+}
+
+fn raw_position_for(m: &MatchedTrack, release: &NormalizedRelease) -> Option<String> {
+    if m.position.is_some() {
+        return None;
+    }
+    return release
+        .tracks
+        .iter()
+        .find(|t| {
+            return t.position.is_none() && t.medium_position == m.medium_position && t.title == m.title;
+        })
+        .and_then(|t| return t.raw_position.clone());
 }
 
 fn sanitize(s: &str) -> String {

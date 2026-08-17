@@ -17,7 +17,7 @@ const FUZZY_THRESHOLD: f64 = 0.7;
 pub struct LibraryTrack {
     pub id: i64,
     pub job_id: Option<i64>,
-    pub release_mbid: String,
+    pub release_mbid: Option<String>,
     pub recording_id: Option<String>,
     pub artist: String,
     pub album: String,
@@ -35,7 +35,7 @@ pub(crate) fn ensure_schema(conn: &Connection) -> Result<()> {
         "CREATE TABLE IF NOT EXISTS library_tracks (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             job_id INTEGER REFERENCES jobs(id),
-            release_mbid TEXT NOT NULL,
+            release_mbid TEXT,
             recording_id TEXT,
             artist TEXT NOT NULL,
             album TEXT NOT NULL,
@@ -81,7 +81,7 @@ pub fn insert_track(conn: &Connection, job_id: Option<i64>, release: &Normalized
             imported_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')",
         params![
             job_id,
-            release.id,
+            if release.id.is_empty() { None } else { Some(release.id.as_str()) },
             matched.recording_id,
             artist,
             release.title,
@@ -173,7 +173,7 @@ pub enum Field {
 
 impl Field {
     fn from_prefix(s: &str) -> Option<Field> {
-        return Some(match s {
+        return Some(match s.to_ascii_lowercase().as_str() {
             "artist" => Field::Artist,
             "album" => Field::Album,
             "title" => Field::Title,
@@ -246,7 +246,7 @@ fn match_field(t: &LibraryTrack, field: Field, kind: &MatchKind) -> bool {
         Field::Track => t.track_position.map(|n| return n.to_string()),
         Field::Disc => t.disc_position.map(|n| return n.to_string()),
         Field::Path => Some(t.path.clone()),
-        Field::Release => Some(t.release_mbid.clone()),
+        Field::Release => t.release_mbid.clone(),
         Field::Recording => t.recording_id.clone(),
     };
     return match text {
@@ -263,8 +263,11 @@ pub fn parse_query(terms: &[String]) -> Result<Vec<Clause>> {
 
 fn parse_term(raw: &str) -> Result<Clause> {
     let mut s = raw;
-    let negate = s.starts_with('-') || s.starts_with('^');
-    if negate {
+    let mut negate = false;
+    if s.starts_with("\\-") || s.starts_with("\\^") {
+        s = &s[1..];
+    } else if s.starts_with('-') || s.starts_with('^') {
+        negate = true;
         s = &s[1..];
     }
     if s.is_empty() {
@@ -277,7 +280,12 @@ fn parse_term(raw: &str) -> Result<Clause> {
     let (field, value) = match s.split_once(':') {
         Some((prefix, rest)) if !rest.is_empty() => match Field::from_prefix(prefix) {
             Some(f) => (Some(f), rest),
-            None => (None, s),
+            None => {
+                return Err(Error::QuerySyntax {
+                    term: raw.to_string(),
+                    reason: "unknown field prefix",
+                });
+            }
         },
         _ => (None, s),
     };
@@ -299,7 +307,23 @@ fn parse_term(raw: &str) -> Result<Clause> {
                 };
             });
         };
-        MatchKind::Range(parse_bound(lo)?, parse_bound(hi)?)
+        let lo = parse_bound(lo)?;
+        let hi = parse_bound(hi)?;
+        if lo.is_none() && hi.is_none() {
+            return Err(Error::QuerySyntax {
+                term: raw.to_string(),
+                reason: "empty range",
+            });
+        }
+        if let (Some(lo), Some(hi)) = (lo, hi) {
+            if lo > hi {
+                return Err(Error::QuerySyntax {
+                    term: raw.to_string(),
+                    reason: "range start exceeds end",
+                });
+            }
+        }
+        MatchKind::Range(lo, hi)
     } else {
         MatchKind::Substring(value.to_string())
     };

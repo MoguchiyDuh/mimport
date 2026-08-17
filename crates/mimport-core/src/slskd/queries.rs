@@ -18,7 +18,15 @@ pub fn search(client: &SlskdClient, query: &str) -> Result<Search> {
     let submitted: Search = client.post_with_timeout("/api/v0/searches", &req, SEARCH_REQUEST_TIMEOUT)?;
 
     let mut current = submitted;
+    let deadline = Instant::now() + SEARCH_REQUEST_TIMEOUT;
     while !current.is_complete {
+        if Instant::now() >= deadline {
+            return Err(Error::Slskd {
+                what: "search",
+                status: 0,
+                body: "search never completed".to_string(),
+            });
+        }
         std::thread::sleep(POLL_INTERVAL);
         current = search_status(client, &current.id)?;
     }
@@ -166,31 +174,69 @@ pub fn fetch_and_wait(
         on_update(t)?;
     }
 
-    let total_size: i64 = files.iter().map(|f| return f.size).sum();
-    let timeout = fetch_wait_timeout(cfg, total_size);
-    let deadline = Instant::now() + timeout;
+    let mut pending: Vec<PendingFetch> = enqueued
+        .enqueued
+        .iter()
+        .map(|t| {
+            let timeout = fetch_wait_timeout(cfg, t.size);
+            return PendingFetch {
+                transfer: t.clone(),
+                deadline: Instant::now() + timeout,
+                timeout_secs: timeout.as_secs(),
+            };
+        })
+        .collect();
 
-    let mut results = Vec::with_capacity(enqueued.enqueued.len());
-    for t in &enqueued.enqueued {
-        loop {
-            let transfer = transfer_status(client, username, &t.id)?;
+    let mut results = Vec::with_capacity(pending.len());
+    let mut timeout_err: Option<Error> = None;
+
+    loop {
+        if pending.is_empty() {
+            break;
+        }
+        let mut i = 0;
+        while i < pending.len() {
+            let deadline = pending[i].deadline;
+            let timeout_secs = pending[i].timeout_secs;
+            let id = pending[i].transfer.id.clone();
+            let transfer = transfer_status(client, username, &id)?;
             on_update(&transfer)?;
             if is_terminal_state(&transfer.state) {
                 results.push(transfer);
-                break;
+                pending.remove(i);
+                continue;
             }
             if Instant::now() >= deadline {
-                return Err(Error::SlskdFetchTimeout {
+                let err = Error::SlskdFetchTimeout {
                     username: username.to_string(),
-                    id: t.id.clone(),
-                    waited_secs: timeout.as_secs(),
+                    id,
+                    waited_secs: timeout_secs,
                     last_state: transfer.state,
-                });
+                };
+                if timeout_err.is_none() {
+                    timeout_err = Some(err);
+                }
+                pending.remove(i);
+                continue;
             }
-            std::thread::sleep(POLL_INTERVAL);
+            i += 1;
         }
+        if pending.is_empty() {
+            break;
+        }
+        std::thread::sleep(POLL_INTERVAL);
+    }
+
+    if let Some(e) = timeout_err {
+        return Err(e);
     }
     return Ok(results);
+}
+
+struct PendingFetch {
+    transfer: Transfer,
+    deadline: Instant,
+    timeout_secs: u64,
 }
 
 fn urlencode(s: &str) -> String {

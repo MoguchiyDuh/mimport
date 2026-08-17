@@ -10,12 +10,13 @@ use mimport_core::library;
 use mimport_core::lidarr::{queries as lidarr_q, LidarrClient};
 use mimport_core::mb::{queries as mb_q, MbClient};
 use mimport_core::postfix;
-use mimport_core::release::{NormalizedRelease, NormalizedReleaseGroup};
+use mimport_core::release::{NormalizedRelease, NormalizedReleaseGroup, NormalizedTrack};
 use mimport_core::scorer::{self, ScoreContext};
 use mimport_core::slskd::{queries as slskd_q, SlskdClient};
+use mimport_core::yt;
 use mimport_core::Config;
 
-use cli::{Cli, Command, LibraryCmd, LidarrCmd, MbCmd, SlskdCmd};
+use cli::{Cli, Command, LibraryCmd, LidarrCmd, MbCmd, SlskdCmd, YtCmd};
 
 fn main() {
     tracing_subscriber::fmt().with_target(false).init();
@@ -46,6 +47,7 @@ fn run(cli: &Cli) -> mimport_core::Result<()> {
             dry_run,
         } => run_import(cli, &cfg, target, release, force.as_deref(), *dry_run),
         Command::Library(cmd) => run_library(cli, &cfg, cmd),
+        Command::Yt(cmd) => run_yt(cli, &cfg, cmd),
     }
 }
 
@@ -264,6 +266,133 @@ fn run_library(cli: &Cli, cfg: &Config, cmd: &LibraryCmd) -> mimport_core::Resul
             output::print(&serde_json::json!({"removed": tracks, "deleted_files": deleted_files}), cli.json);
         }
     }
+    return Ok(());
+}
+
+fn run_yt(cli: &Cli, cfg: &Config, cmd: &YtCmd) -> mimport_core::Result<()> {
+    let YtCmd::Fetch {
+        url,
+        title,
+        artist,
+        album,
+        track,
+        disc,
+        year,
+        release,
+        dry_run,
+    } = cmd;
+
+    let fetched = yt::fetch(&cfg.yt, url, &cfg.paths.staging)?;
+
+    let (norm_release, backfill) = match release {
+        Some(mbid) => {
+            let position = track.ok_or(Error::YtReleaseNeedsTrack)?;
+            let mb_client = MbClient::new(&cfg.musicbrainz)?;
+            let raw = mb_q::release_with_tracks(&mb_client, mbid)?;
+            let norm = NormalizedRelease::from(raw);
+            let backfill_track = match *disc {
+                Some(d) => norm
+                    .tracks
+                    .iter()
+                    .find(|t| {
+                        return t.position == Some(position)
+                            && t.medium_position.unwrap_or(1) == d;
+                    })
+                    .cloned()
+                    .ok_or_else(|| {
+                        return Error::YtTrackNotFound {
+                            release_mbid: mbid.clone(),
+                            position,
+                        };
+                    })?,
+                None => {
+                    let candidates: Vec<&NormalizedTrack> = norm
+                        .tracks
+                        .iter()
+                        .filter(|t| return t.position == Some(position))
+                        .collect();
+                    if candidates.len() > 1 {
+                        return Err(Error::YtTrackNotFound {
+                            release_mbid: mbid.clone(),
+                            position,
+                        });
+                    }
+                    candidates
+                        .into_iter()
+                        .next()
+                        .cloned()
+                        .ok_or_else(|| {
+                            return Error::YtTrackNotFound {
+                                release_mbid: mbid.clone(),
+                                position,
+                            };
+                        })?
+                }
+            };
+            (norm, Some(backfill_track))
+        }
+        None => {
+            let synthetic = NormalizedRelease {
+                id: String::new(),
+                title: album.clone().unwrap_or_else(|| return "Unknown Album".to_string()),
+                status: None,
+                country: None,
+                disambiguation: None,
+                label: None,
+                formats: vec!["Opus".to_string()],
+                track_count: 0,
+                date: year.clone(),
+                artist_credit: artist.clone(),
+                tracks: Vec::new(),
+            };
+            (synthetic, None)
+        }
+    };
+
+    let final_title = title
+        .clone()
+        .or_else(|| return backfill.as_ref().map(|t| return t.title.clone()))
+        .ok_or(Error::YtTitleRequired)?;
+    let final_artist = artist.clone().or_else(|| return norm_release.artist_credit.clone());
+    let final_track = track.or_else(|| return backfill.as_ref().and_then(|t| return t.position));
+    let final_disc = disc.or_else(|| return backfill.as_ref().and_then(|t| return t.medium_position));
+    let recording_id = backfill.as_ref().and_then(|t| return t.recording_id.clone());
+
+    let mut norm_release = norm_release;
+    norm_release.artist_credit = final_artist;
+
+    let matched = vec![import::MatchedTrack {
+        file: fetched.path.clone(),
+        position: final_track,
+        medium_position: final_disc,
+        title: final_title,
+        recording_id,
+        distance: 0.0,
+        reasons: std::collections::BTreeMap::new(),
+    }];
+
+    let opts = import::ImportOptions {
+        dry_run: *dry_run,
+        library_root: cfg.paths.library.clone(),
+    };
+    let imported = import::write_and_copy(&matched, &norm_release, &opts, None)?;
+
+    if !dry_run {
+        let db = jobs::open(&cfg.paths.database)?;
+        library::insert_track(&db, None, &norm_release, &matched[0], &imported[0])?;
+    }
+
+    output::print(
+        &serde_json::json!({
+            "source_url": fetched.source_url,
+            "video_id": fetched.video_id,
+            "yt_title": fetched.title,
+            "yt_uploader": fetched.uploader,
+            "release": if norm_release.id.is_empty() { None } else { Some(norm_release.id.clone()) },
+            "imported": imported,
+        }),
+        cli.json,
+    );
     return Ok(());
 }
 

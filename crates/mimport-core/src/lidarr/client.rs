@@ -19,6 +19,8 @@ pub struct LidarrClient {
 
 /// Fixed pacing floor; the backend 500s under concurrency.
 const MIN_INTERVAL: Duration = Duration::from_millis(350);
+const USER_AGENT: &str = "mimport";
+const MAX_RETRY_AFTER_SECS: u64 = 60;
 
 impl LidarrClient {
     pub fn new(cfg: &LidarrConfig) -> Result<Self> {
@@ -49,7 +51,7 @@ impl LidarrClient {
             return Ok(serde_json::from_str(&cached)?);
         }
 
-        let body = self.fetch_with_retry(&url)?;
+        let body = self.fetch_with_retry(path, &url)?;
         self.cache.put(&url, &body)?;
         return Ok(serde_json::from_str(&body)?);
     }
@@ -63,28 +65,48 @@ impl LidarrClient {
         *last = Instant::now();
     }
 
-    fn fetch_with_retry(&self, url: &str) -> Result<String> {
+    fn fetch_with_retry(&self, path: &str, url: &str) -> Result<String> {
         let mut attempt = 0u32;
         loop {
             attempt += 1;
             self.wait_pace();
 
-            let resp = self.http.get(url).send()?;
+            let resp = match self
+                .http
+                .get(url)
+                .header(reqwest::header::USER_AGENT, USER_AGENT)
+                .send()
+            {
+                Ok(resp) => resp,
+                Err(e) => {
+                    if attempt <= self.max_retries {
+                        std::thread::sleep(backoff(attempt));
+                        continue;
+                    }
+                    return Err(Error::Http(e));
+                }
+            };
+
             let status = resp.status();
             if status.is_success() {
-                return Ok(resp.text()?);
+                return match resp.text() {
+                    Ok(body) => Ok(body),
+                    Err(e) => {
+                        if attempt <= self.max_retries {
+                            std::thread::sleep(backoff(attempt));
+                            continue;
+                        }
+                        Err(Error::Http(e))
+                    }
+                };
             }
 
             // bare 500 is this backend's overload signal — retryable
-            let retryable = matches!(status.as_u16(), 500 | 502 | 503 | 504);
+            let retryable = matches!(status.as_u16(), 429 | 500 | 502 | 503 | 504);
             if !retryable || attempt > self.max_retries {
                 let body = resp.text().unwrap_or_default();
                 if status.as_u16() == 404 {
-                    return Err(Error::Lidarr {
-                        what: "lookup",
-                        status: 404,
-                        body,
-                    });
+                    return Err(not_found(path));
                 }
                 if retryable {
                     return Err(Error::LidarrUnavailable { attempts: attempt });
@@ -96,10 +118,36 @@ impl LidarrClient {
                 });
             }
 
-            let backoff = Duration::from_millis(500 * 2u64.pow(attempt.min(6)));
-            std::thread::sleep(backoff);
+            let sleep_for = retry_after(&resp).unwrap_or_else(|| return backoff(attempt));
+            std::thread::sleep(sleep_for);
         }
     }
+}
+
+fn backoff(attempt: u32) -> Duration {
+    return Duration::from_millis(500 * 2u64.pow(attempt.min(6)));
+}
+
+fn retry_after(resp: &reqwest::blocking::Response) -> Option<Duration> {
+    let secs: u64 = resp
+        .headers()
+        .get(reqwest::header::RETRY_AFTER)?
+        .to_str()
+        .ok()?
+        .parse()
+        .ok()?;
+    return Some(Duration::from_secs(secs.min(MAX_RETRY_AFTER_SECS)));
+}
+
+fn not_found(path: &str) -> Error {
+    let mut segments = path.trim_start_matches('/').split('/');
+    let entity: &'static str = match segments.next().unwrap_or("") {
+        "artist" => "artist",
+        "album" => "album",
+        _ => "entity",
+    };
+    let mbid = segments.next().unwrap_or("").to_string();
+    return Error::LidarrNotFound { entity, mbid };
 }
 
 fn urlencode(s: &str) -> String {

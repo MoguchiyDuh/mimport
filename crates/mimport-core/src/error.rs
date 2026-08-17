@@ -30,6 +30,9 @@ pub enum Error {
     #[error("musicbrainz.user_agent is not set meaningfully: {value:?}\nset it in config.toml")]
     MbUserAgentUnset { value: String },
 
+    #[error("slskd.{field} is not set meaningfully: {value:?}\nset it in config.toml")]
+    SlskdCredsUnset { field: &'static str, value: String },
+
     #[error("lidarr proxy {what} failed: HTTP {status}\n{body}")]
     Lidarr {
         what: &'static str,
@@ -82,9 +85,6 @@ pub enum Error {
     #[error("db error: {0}")]
     Db(#[from] rusqlite::Error),
 
-    #[error("not yet implemented: {0}")]
-    NotImplemented(&'static str),
-
     #[error("probe/tag error at {path}: {reason}")]
     Probe { path: PathBuf, reason: String },
 
@@ -109,6 +109,15 @@ pub enum Error {
 
     #[error("invalid library query term {term:?}: {reason}")]
     QuerySyntax { term: String, reason: &'static str },
+
+    #[error("`yt fetch --release` requires `--track` to pick which release track to backfill from")]
+    YtReleaseNeedsTrack,
+
+    #[error("release {release_mbid} has no track at position {position}")]
+    YtTrackNotFound { release_mbid: String, position: u32 },
+
+    #[error("`yt fetch` needs a title: pass --title, or --release/--track to backfill one")]
+    YtTitleRequired,
 }
 
 impl Error {
