@@ -116,6 +116,9 @@ pub enum Error {
     #[error("`yt fetch` needs a title: pass --title, or --release/--track to backfill one")]
     YtTitleRequired,
 
+    #[error("`yt fetch` fetched no tracks")]
+    YtEmptyFetch,
+
     #[error("release has non-Latin fields with no MusicBrainz romanization alias; supply --tags/--track-title or pass --allow-native:\n{0}")]
     UnresolvedTitles(String),
 
