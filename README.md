@@ -1,16 +1,8 @@
 # mimport
 
-Personal, single-user music library pipeline. Runs on one VPS, driven mostly by an AI
-agent issuing individual CLI commands with `--json` output. Not a service — no auth, no
-daemon, no multi-user concerns.
-
-Two rules:
-
-- **Fail loud, no background state.** Every command does one explicit thing and reports
-  exactly what happened. No silent retries, continues, or guesses.
-- **Semi-automatic, not automatic.** The tool assists decisions (ranking editions,
-  proposing matches) but never chains decisions together. A human or agent sits between
-  every stage.
+A single-user CLI pipeline for curating a music library. Resolve artists and albums via
+MusicBrainz/Lidarr, score and pick the best edition, fetch the release from Soulseek (or
+YouTube), post-process tags, and import correctly-tagged files into the library.
 
 The job ends at a correctly tagged, correctly placed file on disk. Navidrome refresh and
 listening are out of scope.
@@ -70,26 +62,26 @@ Every command supports `--json`. `library` query terms support `field:value`, `~
 
 ## Config
 
-Copy `config.example.toml` to `config.toml`:
+All configuration lives in a single `config.toml` — no `.env`, no environment
+variables. Copy `config.example.toml` to `config.toml` and fill it in. `config.toml`
+is gitignored because it holds the credentials below; keep it out of version control.
 
 - `[paths]` — library, downloads, staging, database.
 - `[musicbrainz]` — UA (required), rate limit, cache.
 - `[lidarr]` — `api.lidarr.audio` proxy (cache only).
-- `[slskd]` — Soulseek daemon URL, username/password, fetch timeouts.
+- `[slskd]` — Soulseek daemon URL, and **username/password** (sensitive), fetch timeouts.
 - `[quality]` — postfix downsample target.
 - `[scoring]` — edition-scorer weights (optional, sane defaults).
 - `[cover_art]` — Cover Art Archive base URL (optional).
 - `[yt]` — `yt_dlp_path` (optional, defaults to `yt-dlp` on `$PATH`).
 
+Sensitive values (`slskd.username`, `slskd.password`) live in `config.toml` alongside
+everything else — there is no separate secrets file.
+
 ## Build
 
-Rust 2024 (stable). Workspace: `mimport-core` (lib) + `mimport` (bin).
+Requires Rust (stable, edition 2024).
 
 ```
 cargo build --release
 ```
-
-## Non-goals
-
-No `mimport pull <artist>` one-shot, no autoimport/autofetch, no daemon/scheduler, no
-web UI, no plugin system. Not a lidarr/beets clone — deliberately narrower scope.
