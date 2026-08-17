@@ -17,3 +17,4 @@ symphonia.workspace = true
 pathfinding.workspace = true
 tracing.workspace = true
 thiserror.workspace = true
+image.workspace = true

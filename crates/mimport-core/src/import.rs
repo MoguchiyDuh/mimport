@@ -48,6 +48,8 @@ pub struct MatchedTrack {
     pub position: Option<u32>,
     pub medium_position: Option<u32>,
     pub title: String,
+    /// Original (pre-romanization) title, set only when `title` was swapped.
+    pub title_native: Option<String>,
     pub recording_id: Option<String>,
     pub distance: f64,
     pub reasons: BTreeMap<&'static str, f64>,
@@ -258,6 +260,7 @@ pub fn match_tracks(locals: &[LocalTrack], release: &NormalizedRelease) -> Match
                 position: track.position,
                 medium_position: track.medium_position,
                 title: track.title.clone(),
+                title_native: track.title_native.clone(),
                 recording_id: track.recording_id.clone(),
                 distance: d.total,
                 reasons: d.reasons.clone(),
@@ -347,6 +350,7 @@ pub fn apply_force_mapping(locals: &[LocalTrack], release: &NormalizedRelease, m
             position: track.position,
             medium_position: track.medium_position,
             title: track.title.clone(),
+            title_native: track.title_native.clone(),
             recording_id: track.recording_id.clone(),
             distance: 0.0,
             reasons: BTreeMap::new(),
@@ -491,8 +495,22 @@ fn write_tags(path: &Path, m: &MatchedTrack, release: &NormalizedRelease, cover_
     if let Some(label) = &release.label {
         let _ = tag.insert_text(ItemKey::Label, label.clone());
     }
+    if let Some(genre) = &release.genre {
+        tag.set_genre(genre.clone());
+    }
     if let Some(id) = &m.recording_id {
         let _ = tag.insert_text(ItemKey::MusicBrainzRecordingId, id.clone());
+    }
+    // Native script preserved: lofty has no OriginalTrackTitle frame (ID3 lacks one),
+    // so that one field rides in Comment; artist/album have dedicated frames.
+    if let Some(native) = &release.artist_credit_native {
+        let _ = tag.insert_text(ItemKey::OriginalArtist, native.clone());
+    }
+    if let Some(native) = &release.title_native {
+        let _ = tag.insert_text(ItemKey::OriginalAlbumTitle, native.clone());
+    }
+    if let Some(native) = &m.title_native {
+        let _ = tag.insert_text(ItemKey::Comment, format!("Original title: {native}"));
     }
     // release.id may be a non-mbid sentinel (yt fetch with no --release backfill)
     if looks_like_mbid(&release.id) {

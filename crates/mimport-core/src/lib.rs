@@ -10,6 +10,8 @@ pub mod lidarr;
 pub mod mb;
 pub mod postfix;
 pub mod release;
+pub mod romanize;
+pub mod tags;
 pub mod scorer;
 pub mod slskd;
 pub mod yt;

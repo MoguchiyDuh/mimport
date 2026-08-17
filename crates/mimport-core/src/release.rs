@@ -16,7 +16,27 @@ pub struct NormalizedRelease {
     pub date: Option<String>,
     /// Release-level artist credit; `None` from the Lidarr proxy (no artist field).
     pub artist_credit: Option<String>,
+    /// Per-member artist credit, only populated from the MB path; used to look up
+    /// per-artist romanization aliases. Empty from the Lidarr proxy.
+    pub artist_credit_parts: Vec<ArtistCreditPart>,
+    /// Release-group mbid, only populated from the MB path; used to look up a
+    /// romanized album title alias.
+    pub release_group_id: Option<String>,
+    /// Original (pre-romanization) title, set only when `title` was swapped.
+    pub title_native: Option<String>,
+    /// Original (pre-romanization) artist credit, set only when `artist_credit` was swapped.
+    pub artist_credit_native: Option<String>,
+    /// Manual-only field; MB isn't queried for genre, so this is `None` unless
+    /// a `TagOverrides.genre` was applied.
+    pub genre: Option<String>,
     pub tracks: Vec<NormalizedTrack>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ArtistCreditPart {
+    pub id: String,
+    pub name: String,
+    pub join_phrase: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -35,6 +55,8 @@ pub struct NormalizedTrack {
     /// 1-based disc/medium number. `None` is treated as disc 1 by consumers.
     pub medium_position: Option<u32>,
     pub raw_position: Option<String>,
+    /// Original (pre-romanization) title, set only when `title` was swapped.
+    pub title_native: Option<String>,
 }
 
 impl NormalizedRelease {
@@ -58,6 +80,18 @@ impl From<MbRelease> for NormalizedRelease {
             .and_then(|li| return li.label.as_ref())
             .map(|l| return l.name.clone());
         let artist_credit = join_artist_credit(&r.artist_credit);
+        let artist_credit_parts = r
+            .artist_credit
+            .iter()
+            .map(|c| {
+                return ArtistCreditPart {
+                    id: c.artist.id.clone(),
+                    name: c.name.clone(),
+                    join_phrase: c.join_phrase.clone(),
+                };
+            })
+            .collect();
+        let release_group_id = r.release_group.as_ref().map(|g| return g.id.clone());
         let tracks = r
             .media
             .into_iter()
@@ -79,6 +113,7 @@ impl From<MbRelease> for NormalizedRelease {
                     medium_format,
                     medium_position,
                     raw_position: Some(t.number),
+                    title_native: None,
                 };
             })
             .collect();
@@ -94,6 +129,11 @@ impl From<MbRelease> for NormalizedRelease {
             track_count,
             date: r.date,
             artist_credit,
+            artist_credit_parts,
+            release_group_id,
+            title_native: None,
+            artist_credit_native: None,
+            genre: None,
             tracks,
         };
     }
@@ -122,6 +162,7 @@ impl From<LidarrRelease> for NormalizedRelease {
                     medium_format,
                     medium_position: t.medium_number,
                     raw_position: None,
+                    title_native: None,
                 };
             })
             .collect();
@@ -135,6 +176,11 @@ impl From<LidarrRelease> for NormalizedRelease {
             label,
             formats,
             artist_credit: None,
+            artist_credit_parts: Vec::new(),
+            release_group_id: None,
+            title_native: None,
+            artist_credit_native: None,
+            genre: None,
             track_count: r.track_count,
             date,
             tracks,

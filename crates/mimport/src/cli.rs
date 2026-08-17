@@ -42,6 +42,30 @@ pub enum Command {
         /// {"<file path>": <track position>} mapping that bypasses Munkres matching entirely
         #[arg(long)]
         force: Option<PathBuf>,
+        /// JSON file with manual tag overrides: artist, album, date, label, genre, cover
+        /// (image path), tracks ({"<position>": "<title>"}); wins over MB, loses to flags below
+        #[arg(long)]
+        tags: Option<PathBuf>,
+        #[arg(long)]
+        artist: Option<String>,
+        #[arg(long)]
+        album: Option<String>,
+        #[arg(long)]
+        date: Option<String>,
+        #[arg(long)]
+        label: Option<String>,
+        #[arg(long)]
+        genre: Option<String>,
+        /// local image file to embed as cover art instead of fetching from Cover Art Archive
+        #[arg(long)]
+        cover: Option<PathBuf>,
+        /// "<position>=<title>" manual track title override; repeatable
+        #[arg(long = "track-title")]
+        track_title: Vec<String>,
+        /// keep native (CJK/etc) script for any field with no romanization alias or manual override,
+        /// instead of blocking the import
+        #[arg(long)]
+        allow_native: bool,
         #[arg(long)]
         dry_run: bool,
     },
