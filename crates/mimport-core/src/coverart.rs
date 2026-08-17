@@ -83,14 +83,12 @@ impl CoverArtClient {
             }
         };
         let status = resp.status();
-        if status.as_u16() == 404 {
-            return Ok(None);
-        }
         if !status.is_success() {
-            return Err(Error::CoverArt {
-                status: status.as_u16(),
-                body: resp.text().unwrap_or_default(),
-            });
+            if status.as_u16() != 404 {
+                let body = resp.text().unwrap_or_default();
+                tracing::warn!("cover art fetch failed for {release_mbid}: HTTP {status} {body}; importing without art");
+            }
+            return Ok(None);
         }
         let mime = resp
             .headers()
