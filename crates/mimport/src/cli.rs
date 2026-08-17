@@ -123,6 +123,10 @@ pub enum YtCmd {
     /// no search-by-name yet. Tags are manual (no auto-tagging): pass
     /// --title/--artist/etc., or --release <mbid> --track <n> to backfill
     /// title/artist/recording-id from a specific MB release track.
+    ///
+    /// With --playlist, fetch every entry (in playlist order) and map each to
+    /// its release track by position; requires --release. Cover art defaults
+    /// to the YouTube thumbnail.
     Fetch {
         url: String,
         #[arg(long)]
@@ -141,6 +145,17 @@ pub enum YtCmd {
         /// MB release mbid to backfill metadata/MBIDs from; requires --track
         #[arg(long)]
         release: Option<String>,
+        /// fetch the whole playlist/album instead of a single video
+        #[arg(long)]
+        playlist: bool,
+        /// JSON manual tag overrides (same schema as `import --tags`)
+        #[arg(long)]
+        tags: Option<PathBuf>,
+        /// local image to embed as cover art instead of the YouTube thumbnail
+        #[arg(long)]
+        cover: Option<PathBuf>,
+        #[arg(long)]
+        allow_native: bool,
         #[arg(long)]
         dry_run: bool,
     },

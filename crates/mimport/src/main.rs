@@ -1,6 +1,8 @@
 mod cli;
 mod output;
 
+use std::path::Path;
+
 use clap::Parser;
 use mimport_core::coverart::CoverArtClient;
 use mimport_core::error::Error;
@@ -338,10 +340,30 @@ fn run_yt(cli: &Cli, cfg: &Config, cmd: &YtCmd) -> mimport_core::Result<()> {
         disc,
         year,
         release,
+        playlist,
+        tags,
+        cover,
+        allow_native,
         dry_run,
     } = cmd;
 
-    let fetched = yt::fetch(&cfg.yt, url, &cfg.paths.staging)?;
+    if *playlist {
+        return run_yt_playlist(
+            cli,
+            cfg,
+            url,
+            YtPlaylistFlags {
+                release: release.as_deref(),
+                tags: tags.as_deref(),
+                cover: cover.as_deref(),
+                allow_native: *allow_native,
+                dry_run: *dry_run,
+            },
+        );
+    }
+
+    let fetched = yt::fetch(&cfg.yt, url, &cfg.paths.staging, false)?;
+    let fetched = fetched.into_iter().next().ok_or(Error::YtEmptyFetch)?;
 
     let (norm_release, backfill) = match release {
         Some(mbid) => {
@@ -454,6 +476,105 @@ fn run_yt(cli: &Cli, cfg: &Config, cmd: &YtCmd) -> mimport_core::Result<()> {
             "yt_title": fetched.title,
             "yt_uploader": fetched.uploader,
             "release": if norm_release.id.is_empty() { None } else { Some(norm_release.id.clone()) },
+            "imported": imported,
+        }),
+        cli.json,
+    );
+    return Ok(());
+}
+
+struct YtPlaylistFlags<'a> {
+    release: Option<&'a str>,
+    tags: Option<&'a Path>,
+    cover: Option<&'a Path>,
+    allow_native: bool,
+    dry_run: bool,
+}
+
+fn run_yt_playlist(
+    cli: &Cli,
+    cfg: &Config,
+    url: &str,
+    flags: YtPlaylistFlags<'_>,
+) -> mimport_core::Result<()> {
+    let release_mbid = flags.release.ok_or(Error::YtReleaseNeedsTrack)?;
+    let fetched = yt::fetch(&cfg.yt, url, &cfg.paths.staging, true)?;
+
+    let mb_client = MbClient::new(&cfg.musicbrainz)?;
+    let raw_release = mb_q::release_with_tracks(&mb_client, release_mbid)?;
+    let mut release = NormalizedRelease::from(raw_release);
+
+    let mut overrides = match flags.tags {
+        Some(path) => tags::TagOverrides::load(path)?,
+        None => tags::TagOverrides::default(),
+    };
+    overrides.apply_flag_overrides(tags::FlagOverrides {
+        artist: None,
+        album: None,
+        date: None,
+        label: None,
+        genre: None,
+        cover: flags.cover.map(|p| return p.to_path_buf()),
+        track_titles: &[],
+    })?;
+
+    let unresolved = tags::resolve(&mb_client, &mut release, &overrides);
+    if !unresolved.is_empty() && !flags.allow_native {
+        return Err(Error::UnresolvedTitles(tags::format_unresolved(&unresolved)));
+    }
+
+    let cover_art = match &overrides.cover {
+        Some(path) => Some(mimport_core::coverart::from_local_file(path)?),
+        None => match fetched.iter().find_map(|f| return f.thumbnail.as_ref()) {
+            Some(thumb) => Some(mimport_core::coverart::from_local_file(thumb)?),
+            None => None,
+        },
+    };
+
+    let mut matched: Vec<import::MatchedTrack> = Vec::new();
+    for (idx, f) in fetched.iter().enumerate() {
+        let position = f.playlist_index.unwrap_or_else(|| return (idx as u32) + 1);
+        let track = release
+            .tracks
+            .iter()
+            .find(|t| return t.position == Some(position))
+            .ok_or_else(|| {
+                return Error::YtTrackNotFound {
+                    release_mbid: release_mbid.to_string(),
+                    position,
+                };
+            })?;
+        matched.push(import::MatchedTrack {
+            file: f.path.clone(),
+            position: track.position,
+            medium_position: track.medium_position,
+            title: track.title.clone(),
+            title_native: track.title_native.clone(),
+            recording_id: track.recording_id.clone(),
+            distance: 0.0,
+            reasons: std::collections::BTreeMap::new(),
+        });
+    }
+
+    let opts = import::ImportOptions {
+        dry_run: flags.dry_run,
+        library_root: cfg.paths.library.clone(),
+    };
+    let imported = import::write_and_copy(&matched, &release, &opts, cover_art.as_ref())?;
+
+    if !flags.dry_run {
+        let db = jobs::open(&cfg.paths.database)?;
+        for (m, f) in matched.iter().zip(imported.iter()) {
+            library::insert_track(&db, None, &release, m, f)?;
+        }
+    }
+
+    output::print(
+        &serde_json::json!({
+            "source_url": url,
+            "release": release.id,
+            "cover_art": cover_art.is_some(),
+            "matched": matched,
             "imported": imported,
         }),
         cli.json,
