@@ -30,6 +30,9 @@ Each stage is a separate, explicit command:
 8. **Import** — match files to the release's tracks, write clean tags (incl. cover art),
    copy into the library.
 9. **Library** — browse/query/remove over the index `import` populates.
+10. **YT fetch** — separate URL-only path for YouTube/YouTube Music sources: yt-dlp
+    fetches Opus audio, tags are set manually (or backfilled from one `--release`
+    track), then it lands in the library same as `import`.
 
 ## Commands
 
@@ -56,6 +59,10 @@ mimport import <job-id|path|title> --release <mbid> [--force <mapping.json>] [--
 mimport library list [<query>...]
 mimport library show <id>
 mimport library remove [--files] [<query>...]
+
+mimport yt fetch <url> [--title <text>] [--artist <text>] [--album <text>]
+                        [--track <n>] [--disc <n>] [--year <text>]
+                        [--release <mbid> --track <n>] [--dry-run]
 ```
 
 Every command supports `--json`. `library` query terms support `field:value`, `~fuzzy`,
@@ -72,6 +79,7 @@ Copy `config.example.toml` to `config.toml`:
 - `[quality]` — postfix downsample target.
 - `[scoring]` — edition-scorer weights (optional, sane defaults).
 - `[cover_art]` — Cover Art Archive base URL (optional).
+- `[yt]` — `yt_dlp_path` (optional, defaults to `yt-dlp` on `$PATH`).
 
 ## Build
 

@@ -160,7 +160,7 @@ pub fn score_release(release: &NormalizedRelease, ctx: &ScoreContext<'_>) -> Sco
     score_tracks(release, ctx, &mut b);
     score_metadata(release, cfg, &mut b);
     score_terms(release, cfg, &mut b);
-    score_bonus_tracks(release, ctx, &mut b);
+    score_bonus_tracks(release, cfg, &mut b);
     score_group(ctx, cfg, &mut b);
 
     return b;
@@ -179,15 +179,13 @@ fn score_media(formats: &[String], cfg: &Scoring, b: &mut ScoreBreakdown) {
         return;
     }
     let lowered: Vec<String> = formats.iter().map(|f| return f.to_lowercase()).collect();
-    if lowered.iter().any(|f| return f.contains("digital")) {
-        b.push("digital media", cfg.media.digital);
-        return;
-    }
 
     let worst = lowered
         .iter()
         .map(|f| {
-            let points = if f.contains("vinyl") {
+            let points = if f.contains("digital") {
+                cfg.media.digital
+            } else if f.contains("vinyl") {
                 cfg.media.vinyl
             } else if f.contains("cassette")
                 || f.contains("shellac")
@@ -241,14 +239,18 @@ fn score_terms(release: &NormalizedRelease, cfg: &Scoring, b: &mut ScoreBreakdow
         b.push(format!("title terms ({title_penalty})"), -title_penalty);
     }
 
+    let tracklist = tracklist_penalty(release, cfg);
+    if tracklist > 0.0 {
+        b.push(format!("tracklist terms ({tracklist})"), -tracklist);
+    }
+}
+
+fn tracklist_penalty(release: &NormalizedRelease, cfg: &Scoring) -> f64 {
     let mut tracklist = 0.0;
     for track in &release.tracks {
         tracklist += term_penalty(&track.title, cfg);
     }
-    let tracklist = tracklist.min(cfg.terms.cap);
-    if tracklist > 0.0 {
-        b.push(format!("tracklist terms ({tracklist})"), -tracklist);
-    }
+    return tracklist.min(cfg.terms.cap);
 }
 
 fn term_penalty(text: &str, cfg: &Scoring) -> f64 {
@@ -272,44 +274,17 @@ fn term_penalty(text: &str, cfg: &Scoring) -> f64 {
     return total;
 }
 
-fn score_bonus_tracks(release: &NormalizedRelease, ctx: &ScoreContext<'_>, b: &mut ScoreBreakdown) {
-    let cfg = ctx.cfg;
-    let is_official = release
-        .status
-        .as_deref()
-        .is_some_and(|s| return s.eq_ignore_ascii_case("official"));
-    if !is_official {
+fn score_bonus_tracks(release: &NormalizedRelease, cfg: &Scoring, b: &mut ScoreBreakdown) {
+    let title = release.title.to_lowercase();
+    let is_edition = title.contains("deluxe") || title.contains("expanded") || title.contains("bonus");
+    if !is_edition {
         return;
     }
-
-    let mut total = 0.0;
-    for track in &release.tracks {
-        if track.length_ms.is_none() {
-            continue;
-        }
-        if let Some(medium) = &track.medium_format {
-            let medium = medium.to_lowercase();
-            if medium.contains("dvd") || medium.contains("data") || medium.contains("cd-rom") || medium.contains("video") {
-                continue;
-            }
-        }
-        let title = normalize_title(&track.title);
-        if ctx.canonical_titles.contains(&title) {
-            continue;
-        }
-        if term_penalty(&track.title, cfg) > 0.0 {
-            continue;
-        }
-        if ctx.canonical_titles.iter().any(|c| return title.contains(c.as_str())) {
-            continue;
-        }
-        let points = (cfg.bonus.legit_extra_track).min(cfg.bonus.legit_extra_track_cap - total).max(0.0);
-        if points <= 0.0 {
-            continue;
-        }
-        total += points;
-        b.push(format!("bonus track: {}", track.title), points);
+    let tracklist = tracklist_penalty(release, cfg);
+    if tracklist.abs() > 25.0 {
+        return;
     }
+    b.push("edition bonus", cfg.bonus.edition_bonus);
 }
 
 fn score_group(ctx: &ScoreContext<'_>, cfg: &Scoring, b: &mut ScoreBreakdown) {

@@ -48,6 +48,9 @@ pub enum Command {
 
     #[command(subcommand)]
     Library(LibraryCmd),
+
+    #[command(subcommand)]
+    Yt(YtCmd),
 }
 
 /// Query terms are trailing args, one shell token per clause; `--files`/`--`
@@ -88,6 +91,35 @@ pub enum MbCmd {
     Album { mbid: String },
     Tracks { release_mbid: String },
     Track { text: String },
+}
+
+#[derive(Subcommand)]
+pub enum YtCmd {
+    /// Fetch a YouTube/YouTube Music URL as Opus and import it. URL only —
+    /// no search-by-name yet. Tags are manual (no auto-tagging): pass
+    /// --title/--artist/etc., or --release <mbid> --track <n> to backfill
+    /// title/artist/recording-id from a specific MB release track.
+    Fetch {
+        url: String,
+        #[arg(long)]
+        title: Option<String>,
+        #[arg(long)]
+        artist: Option<String>,
+        #[arg(long)]
+        album: Option<String>,
+        /// Track position — also selects which --release track to backfill from
+        #[arg(long)]
+        track: Option<u32>,
+        #[arg(long)]
+        disc: Option<u32>,
+        #[arg(long)]
+        year: Option<String>,
+        /// MB release mbid to backfill metadata/MBIDs from; requires --track
+        #[arg(long)]
+        release: Option<String>,
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 
 #[derive(Subcommand)]

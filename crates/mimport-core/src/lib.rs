@@ -12,6 +12,7 @@ pub mod postfix;
 pub mod release;
 pub mod scorer;
 pub mod slskd;
+pub mod yt;
 
 pub use config::Config;
 pub use error::{Error, Result};

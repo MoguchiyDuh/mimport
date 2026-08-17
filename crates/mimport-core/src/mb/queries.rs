@@ -9,7 +9,7 @@ use super::types::{
 pub fn escape_lucene(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for c in s.chars() {
-        if "+-&|!(){}[]^\"~*?:\\".contains(c) {
+        if "+-&|!(){}[]^\"~*?:\\/".contains(c) {
             out.push('\\');
         }
         out.push(c);
@@ -17,8 +17,24 @@ pub fn escape_lucene(s: &str) -> String {
     return out;
 }
 
+fn lucene_phrase(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('"');
+    for c in s.chars() {
+        if c == '"' || c == '\\' {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out.push('"');
+    return out;
+}
+
 pub fn search_artists(client: &MbClient, query: &str) -> Result<Vec<ArtistSearchResult>> {
-    let q = format!("artist:{}", escape_lucene(query));
+    if query.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+    let q = format!("artist:{}", lucene_phrase(query));
     let resp: ArtistSearchResponse = client.get("/artist", &[("query", &q), ("limit", "10")])?;
     return Ok(resp.artists);
 }
@@ -51,7 +67,10 @@ pub fn release_with_tracks(client: &MbClient, release_mbid: &str) -> Result<Rele
 }
 
 pub fn search_recordings(client: &MbClient, query: &str) -> Result<Vec<RecordingSearchResult>> {
-    let q = format!("recording:{}", escape_lucene(query));
+    if query.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+    let q = format!("recording:{}", lucene_phrase(query));
     let resp: RecordingSearchResponse =
         client.get("/recording", &[("query", &q), ("limit", "10")])?;
     return Ok(resp.recordings);

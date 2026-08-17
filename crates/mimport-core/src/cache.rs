@@ -45,7 +45,19 @@ impl DiskCache {
     pub fn put(&self, key: &str, body: &str) -> Result<()> {
         std::fs::create_dir_all(&self.dir).map_err(|e| return Error::io(&self.dir, e))?;
         let path = self.path_for(key);
-        std::fs::write(&path, body).map_err(|e| return Error::io(&path, e))?;
+        let file_name = path
+            .file_name()
+            .and_then(|n| return n.to_str())
+            .unwrap_or("entry");
+        let tmp_path = self.dir.join(format!(".{file_name}.{}.tmp", std::process::id()));
+        if let Err(e) = std::fs::write(&tmp_path, body) {
+            let _ = std::fs::remove_file(&tmp_path);
+            return Err(Error::io(&tmp_path, e));
+        }
+        if let Err(e) = std::fs::rename(&tmp_path, &path) {
+            let _ = std::fs::remove_file(&tmp_path);
+            return Err(Error::io(&path, e));
+        }
         return Ok(());
     }
 }

@@ -151,7 +151,10 @@ pub fn downsample(path: &Path, target_rate: u32, target_depth: u16) -> Result<()
         });
     }
 
-    std::fs::rename(&tmp, path).map_err(|e| return Error::io(path, e))?;
+    if let Err(e) = std::fs::rename(&tmp, path) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(Error::io(path, e));
+    }
     return Ok(());
 }
 
@@ -170,7 +173,7 @@ pub enum Suspicion {
 
 pub fn suspect_lossy(props: &AudioProperties) -> Option<Suspicion> {
     let Some(ratio) = props.compression_ratio() else {
-        return Some(Suspicion::Unknown);
+        return None;
     };
     if ratio < 0.30 {
         return Some(Suspicion::ImplausibleCompression);

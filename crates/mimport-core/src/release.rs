@@ -34,6 +34,7 @@ pub struct NormalizedTrack {
     pub medium_format: Option<String>,
     /// 1-based disc/medium number. `None` is treated as disc 1 by consumers.
     pub medium_position: Option<u32>,
+    pub raw_position: Option<String>,
 }
 
 impl NormalizedRelease {
@@ -77,6 +78,7 @@ impl From<MbRelease> for NormalizedRelease {
                     recording_id: Some(t.recording.id),
                     medium_format,
                     medium_position,
+                    raw_position: Some(t.number),
                 };
             })
             .collect();
@@ -119,6 +121,7 @@ impl From<LidarrRelease> for NormalizedRelease {
                     recording_id: t.recording_id,
                     medium_format,
                     medium_position: t.medium_number,
+                    raw_position: None,
                 };
             })
             .collect();

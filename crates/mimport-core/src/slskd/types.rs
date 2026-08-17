@@ -5,8 +5,6 @@ pub struct SessionResponse {
     pub token: String,
     #[serde(rename = "tokenType")]
     pub token_type: String,
-    pub expires: i64,
-    pub issued: i64,
 }
 
 #[derive(Debug, Serialize)]

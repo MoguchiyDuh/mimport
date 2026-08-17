@@ -4,7 +4,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 use serde::Serialize;
 
 use crate::error::{Error, Result};
-use crate::slskd::queries::split_remote_path;
+use crate::slskd::queries::{is_terminal_state, split_remote_path};
 use crate::slskd::types::Transfer;
 
 pub const STATUS_INCOMPLETE: &str = "incomplete";
@@ -128,7 +128,11 @@ pub fn upsert_job_file(conn: &Connection, job_id: i64, local_dir: &Path, transfe
     conn.execute(
         "INSERT INTO job_files (job_id, remote_path, transfer_id, size, state, local_path)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-         ON CONFLICT(job_id, transfer_id) DO UPDATE SET state = excluded.state",
+         ON CONFLICT(job_id, transfer_id) DO UPDATE SET
+            state = excluded.state,
+            size = excluded.size,
+            remote_path = excluded.remote_path,
+            local_path = excluded.local_path",
         params![
             job_id,
             transfer.filename,
@@ -166,10 +170,15 @@ pub fn get_job_files(conn: &Connection, job_id: i64) -> Result<Vec<JobFile>> {
     return Ok(rows);
 }
 
-/// Numeric string = job id; otherwise exact `jobs.title` match, most-recent wins.
+/// Numeric string = job id, falling back to an exact `jobs.title` match;
+/// otherwise exact `jobs.title` match, most-recent wins.
 pub fn resolve_target(conn: &Connection, target: &str) -> Result<Job> {
     if let Ok(id) = target.parse::<i64>() {
-        return get_job(conn, id);
+        match get_job(conn, id) {
+            Ok(job) => return Ok(job),
+            Err(Error::JobNotFound { .. }) => {}
+            Err(e) => return Err(e),
+        }
     }
     let found: Option<Job> = conn
         .query_row(
@@ -218,6 +227,9 @@ pub fn derive_status(transfers: &[Transfer]) -> &'static str {
 
 pub fn derive_status_from_states(states: &[&str]) -> &'static str {
     if states.is_empty() {
+        return STATUS_INCOMPLETE;
+    }
+    if states.iter().any(|s| return !is_terminal_state(s)) {
         return STATUS_INCOMPLETE;
     }
     let succeeded = states.iter().filter(|s| return is_succeeded(s)).count();
