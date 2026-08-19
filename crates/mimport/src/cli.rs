@@ -66,6 +66,9 @@ pub enum Command {
         /// instead of blocking the import
         #[arg(long)]
         allow_native: bool,
+        /// move matched files into the library instead of copying them
+        #[arg(long = "move")]
+        move_files: bool,
         #[arg(long)]
         dry_run: bool,
     },
