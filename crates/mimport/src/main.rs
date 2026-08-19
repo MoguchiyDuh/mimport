@@ -261,6 +261,7 @@ fn run_import(cli: &Cli, cfg: &Config, target: &str, release_mbid: &str, flags: 
 
     let cover_art = match &overrides.cover {
         Some(path) => Some(mimport_core::coverart::from_local_file(path)?),
+        None if flags.dry_run => None,
         None => {
             let cover_client = CoverArtClient::new(&cfg.cover_art, &cfg.musicbrainz.user_agent)?;
             cover_client.front_cover(&release.id)?
