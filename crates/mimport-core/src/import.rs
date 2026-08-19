@@ -389,6 +389,8 @@ pub fn apply_force_mapping(locals: &[LocalTrack], release: &NormalizedRelease, m
 pub struct ImportOptions {
     pub dry_run: bool,
     pub library_root: PathBuf,
+    /// move instead of copy; falls back to copy+remove across filesystems
+    pub move_files: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -397,8 +399,24 @@ pub struct ImportedFile {
     pub dest: PathBuf,
 }
 
-/// Copies each matched file into the library layout and writes clean tags onto
-/// the copy; the source is never touched or moved.
+fn place_file(source: &Path, dest: &Path, move_files: bool) -> Result<()> {
+    if !move_files {
+        std::fs::copy(source, dest).map_err(|e| return Error::io(dest, e))?;
+        return Ok(());
+    }
+    match std::fs::rename(source, dest) {
+        Ok(()) => return Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::CrossesDevices => {
+            std::fs::copy(source, dest).map_err(|e| return Error::io(dest, e))?;
+            std::fs::remove_file(source).map_err(|e| return Error::io(source, e))?;
+            return Ok(());
+        }
+        Err(e) => return Err(Error::io(dest, e)),
+    }
+}
+
+/// Copies (or moves, with `ImportOptions::move_files`) each matched file into
+/// the library layout and writes clean tags onto the placed copy.
 pub fn write_and_copy(matched: &[MatchedTrack], release: &NormalizedRelease, opts: &ImportOptions, cover_art: Option<&CoverArt>) -> Result<Vec<ImportedFile>> {
     let multi_disc = release.tracks.iter().any(|t| return t.medium_position.unwrap_or(1) > 1);
     let artist_dir = sanitize(release.artist_credit.as_deref().unwrap_or("Unknown Artist"));
@@ -444,7 +462,7 @@ pub fn write_and_copy(matched: &[MatchedTrack], release: &NormalizedRelease, opt
                 std::io::Error::new(std::io::ErrorKind::AlreadyExists, "destination already exists"),
             ));
         }
-        std::fs::copy(&m.file, &dest).map_err(|e| return Error::io(&dest, e))?;
+        place_file(&m.file, &dest, opts.move_files)?;
         write_tags(&dest, m, release, cover_art)?;
         out.push(ImportedFile {
             source: m.file.clone(),

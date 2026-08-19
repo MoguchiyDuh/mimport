@@ -56,6 +56,7 @@ fn run(cli: &Cli) -> mimport_core::Result<()> {
             cover,
             track_title,
             allow_native,
+            move_files,
             dry_run,
         } => run_import(
             cli,
@@ -73,6 +74,7 @@ fn run(cli: &Cli) -> mimport_core::Result<()> {
                 cover: cover.clone(),
                 track_title,
                 allow_native: *allow_native,
+                move_files: *move_files,
                 dry_run: *dry_run,
             },
         ),
@@ -227,6 +229,7 @@ struct ImportFlags<'a> {
     cover: Option<std::path::PathBuf>,
     track_title: &'a [String],
     allow_native: bool,
+    move_files: bool,
     dry_run: bool,
 }
 
@@ -277,6 +280,7 @@ fn run_import(cli: &Cli, cfg: &Config, target: &str, release_mbid: &str, flags: 
         let opts = import::ImportOptions {
             dry_run: flags.dry_run,
             library_root: cfg.paths.library.clone(),
+            move_files: flags.move_files,
         };
         imported = import::write_and_copy(&report.matched, &release, &opts, cover_art.as_ref())?;
         if !flags.dry_run {
@@ -493,6 +497,7 @@ fn run_yt(cli: &Cli, cfg: &Config, cmd: &YtCmd) -> mimport_core::Result<()> {
     let opts = import::ImportOptions {
         dry_run: *dry_run,
         library_root: cfg.paths.library.clone(),
+        move_files: false,
     };
     let imported = import::write_and_copy(&matched, &norm_release, &opts, cover_art.as_ref())?;
 
@@ -595,6 +600,7 @@ fn run_yt_playlist(
     let opts = import::ImportOptions {
         dry_run: flags.dry_run,
         library_root: cfg.paths.library.clone(),
+        move_files: false,
     };
     let imported = import::write_and_copy(&matched, &release, &opts, cover_art.as_ref())?;
 
