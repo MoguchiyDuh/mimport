@@ -12,6 +12,7 @@ use lofty::tag::{Accessor, ItemKey, Tag, TagExt, TagType};
 use pathfinding::prelude::{kuhn_munkres_min, Matrix};
 use serde::{Deserialize, Serialize};
 
+use crate::audio::is_audio;
 use crate::coverart::CoverArt;
 use crate::error::{Error, Result};
 use crate::release::{NormalizedRelease, NormalizedTrack};
@@ -32,8 +33,6 @@ const SCALE: i64 = 1_000_000;
 /// so real matches win and hopeless ones can go unmatched.
 const DUMMY_COST_SCALED: i64 = SCALE;
 
-const AUDIO_EXTENSIONS: &[&str] = &["flac", "mp3", "m4a", "mp4", "ogg", "opus", "wav", "ape", "wv"];
-
 pub struct LocalTrack {
     pub path: PathBuf,
     pub title: Option<String>,
@@ -52,6 +51,9 @@ pub struct MatchedTrack {
     /// Original (pre-romanization) title, set only when `title` was swapped.
     pub title_native: Option<String>,
     pub recording_id: Option<String>,
+    /// The matched track's raw (possibly non-numeric) MB track number, carried
+    /// from match time so tag/filename derivation never re-looks-up by title.
+    pub raw_position: Option<String>,
     pub distance: f64,
     pub reasons: BTreeMap<&'static str, f64>,
 }
@@ -111,13 +113,6 @@ fn walk(dir: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
     return Ok(());
 }
 
-fn is_audio(path: &Path) -> bool {
-    return path
-        .extension()
-        .and_then(|e| return e.to_str())
-        .is_some_and(|e| return AUDIO_EXTENSIONS.iter().any(|a| return e.eq_ignore_ascii_case(a)));
-}
-
 fn read_local_track(path: &Path) -> Result<LocalTrack> {
     let tagged = read_from_path(path).map_err(|e| {
         return Error::Probe {
@@ -168,16 +163,27 @@ struct Distance {
 
 fn track_distance(local: &LocalTrack, track: &NormalizedTrack, release_artist: Option<&str>) -> Distance {
     let mut reasons = BTreeMap::new();
+    // Normalize by the weight of signals that had data on both sides, not the
+    // constant total: a sparsely-tagged file must not score artificially low.
+    let mut present_weight = 0.0;
 
     // MBIDs are a hint: penalized only on an explicit conflict, never for missing data.
+    // An empty/whitespace-only local MBID (yt-dlp emits blank MUSICBRAINZ_* fields) is
+    // missing data, so it must not count as a conflict either.
     let recording_id_cost = match (&local.musicbrainz_recording_id, &track.recording_id) {
-        (Some(local_id), Some(track_id)) if local_id != track_id => 1.0,
+        (Some(local_id), Some(track_id)) if !local_id.trim().is_empty() => {
+            present_weight += W_RECORDING_ID;
+            if local_id != track_id { 1.0 } else { 0.0 }
+        }
         _ => 0.0,
     };
     reasons.insert("recording_id", recording_id_cost * W_RECORDING_ID);
 
     let title_cost = match &local.title {
-        Some(t) => 1.0 - text_similarity(t, &track.title),
+        Some(t) => {
+            present_weight += W_TITLE;
+            1.0 - text_similarity(t, &track.title)
+        }
         None => 0.0,
     };
     reasons.insert("track_title", title_cost * W_TITLE);
@@ -185,6 +191,7 @@ fn track_distance(local: &LocalTrack, track: &NormalizedTrack, release_artist: O
     // 10s free slack, then scales to the full penalty at 40s off.
     let length_cost = match (local.duration_secs, track.length_ms) {
         (Some(local_secs), Some(mb_ms)) => {
+            present_weight += W_LENGTH;
             let diff = (local_secs - mb_ms as f64 / 1000.0).abs();
             ((diff - 10.0).max(0.0) / 30.0).min(1.0)
         }
@@ -193,18 +200,25 @@ fn track_distance(local: &LocalTrack, track: &NormalizedTrack, release_artist: O
     reasons.insert("track_length", length_cost * W_LENGTH);
 
     let artist_cost = match (&local.artist, release_artist) {
-        (Some(local_artist), Some(expected)) => 1.0 - text_similarity(local_artist, expected),
+        (Some(local_artist), Some(expected)) => {
+            present_weight += W_ARTIST;
+            1.0 - text_similarity(local_artist, expected)
+        }
         _ => 0.0,
     };
     reasons.insert("track_artist", artist_cost * W_ARTIST);
 
     let index_cost = match (local.track_number, track.position) {
-        (Some(a), Some(b)) if a != b => 1.0,
+        (Some(a), Some(b)) => {
+            present_weight += W_INDEX;
+            if a != b { 1.0 } else { 0.0 }
+        }
         _ => 0.0,
     };
     reasons.insert("track_index", index_cost * W_INDEX);
 
-    let total: f64 = reasons.values().sum::<f64>() / TOTAL_WEIGHT;
+    let denom = if present_weight > 0.0 { present_weight } else { TOTAL_WEIGHT };
+    let total: f64 = reasons.values().sum::<f64>() / denom;
     return Distance { total, reasons };
 }
 
@@ -263,6 +277,7 @@ pub fn match_tracks(locals: &[LocalTrack], release: &NormalizedRelease) -> Match
                 title: track.title.clone(),
                 title_native: track.title_native.clone(),
                 recording_id: track.recording_id.clone(),
+                raw_position: track.raw_position.clone(),
                 distance: d.total,
                 reasons: d.reasons.clone(),
             });
@@ -353,6 +368,7 @@ pub fn apply_force_mapping(locals: &[LocalTrack], release: &NormalizedRelease, m
             title: track.title.clone(),
             title_native: track.title_native.clone(),
             recording_id: track.recording_id.clone(),
+            raw_position: track.raw_position.clone(),
             distance: 0.0,
             reasons: BTreeMap::new(),
         });
@@ -427,13 +443,19 @@ pub fn write_and_copy(matched: &[MatchedTrack], release: &NormalizedRelease, opt
         sanitize(&format!("{} ({year})", release.title))
     };
 
-    let mut out = Vec::with_capacity(matched.len());
+    // Resolve every (source, dest) up front so validation can fail before any
+    // file is placed — critical for --move, where a mid-batch abort would
+    // otherwise leave earlier sources already moved and unrecoverable.
+    let mut plan: Vec<ImportedFile> = Vec::with_capacity(matched.len());
+    let mut seen: HashSet<PathBuf> = HashSet::new();
     for m in matched {
         let ext = m.file.extension().and_then(|e| return e.to_str()).unwrap_or("");
         let track_prefix = match m.position {
             Some(p) => format!("{p:02}"),
-            None => raw_position_for(m, release)
-                .map(|r| return sanitize(&r))
+            None => m
+                .raw_position
+                .as_deref()
+                .map(sanitize)
                 .filter(|s| return !s.is_empty())
                 .unwrap_or_else(|| return "00".to_string()),
         };
@@ -445,31 +467,47 @@ pub fn write_and_copy(matched: &[MatchedTrack], release: &NormalizedRelease, opt
         };
         let dest = opts.library_root.join(&artist_dir).join(&album_dir).join(filename);
 
-        if opts.dry_run {
-            out.push(ImportedFile {
-                source: m.file.clone(),
-                dest,
-            });
-            continue;
+        if !seen.insert(dest.clone()) {
+            return Err(Error::io(
+                &dest,
+                std::io::Error::new(std::io::ErrorKind::AlreadyExists, "two matched files resolve to the same destination"),
+            ));
         }
-
-        if let Some(parent) = dest.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| return Error::io(parent, e))?;
-        }
-        if dest.exists() {
+        if !opts.dry_run && dest.exists() && !same_file(&m.file, &dest) {
             return Err(Error::io(
                 &dest,
                 std::io::Error::new(std::io::ErrorKind::AlreadyExists, "destination already exists"),
             ));
         }
-        place_file(&m.file, &dest, opts.move_files)?;
-        write_tags(&dest, m, release, cover_art)?;
-        out.push(ImportedFile {
+        plan.push(ImportedFile {
             source: m.file.clone(),
             dest,
         });
     }
-    return Ok(out);
+
+    if opts.dry_run {
+        return Ok(plan);
+    }
+
+    for (m, imported) in matched.iter().zip(plan.iter()) {
+        if let Some(parent) = imported.dest.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| return Error::io(parent, e))?;
+        }
+        if !same_file(&imported.source, &imported.dest) {
+            place_file(&imported.source, &imported.dest, opts.move_files)?;
+        }
+        write_tags(&imported.dest, m, release, cover_art)?;
+    }
+    return Ok(plan);
+}
+
+/// True if both paths exist and refer to the same file (already-imported /
+/// re-import case); lets that file be re-tagged in place instead of erroring.
+fn same_file(a: &Path, b: &Path) -> bool {
+    return match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => false,
+    };
 }
 
 /// Writes a fresh tag, not a patch onto whatever the source carried.
@@ -504,8 +542,8 @@ fn write_tags(path: &Path, m: &MatchedTrack, release: &NormalizedRelease, cover_
     }
     if let Some(pos) = m.position {
         tag.set_track(pos);
-    } else if let Some(raw) = raw_position_for(m, release) {
-        let _ = tag.insert_text(ItemKey::TrackNumber, raw);
+    } else if let Some(raw) = &m.raw_position {
+        let _ = tag.insert_text(ItemKey::TrackNumber, raw.clone());
     }
     let disc_total = disc_total_for(m, release);
     if disc_total > 0 {
@@ -514,10 +552,10 @@ fn write_tags(path: &Path, m: &MatchedTrack, release: &NormalizedRelease, cover_
     if let Some(disc) = m.medium_position {
         tag.set_disk(disc);
     }
-    if let Some(date) = &release.date {
-        if !date.is_empty() {
-            let _ = tag.insert_text(ItemKey::RecordingDate, date.clone());
-        }
+    if let Some(date) = &release.date
+        && !date.is_empty()
+    {
+        let _ = tag.insert_text(ItemKey::RecordingDate, date.clone());
     }
     if let Some(label) = &release.label {
         let _ = tag.insert_text(ItemKey::Label, label.clone());
@@ -581,8 +619,8 @@ fn write_vorbis_tags(path: &Path, m: &MatchedTrack, release: &NormalizedRelease,
     }
     if let Some(pos) = m.position {
         vc.set_track(pos);
-    } else if let Some(raw) = raw_position_for(m, release) {
-        vc.insert("TRACKNUMBER".to_string(), raw);
+    } else if let Some(raw) = &m.raw_position {
+        vc.insert("TRACKNUMBER".to_string(), raw.clone());
     }
     let disc_total = disc_total_for(m, release);
     if disc_total > 0 {
@@ -638,19 +676,6 @@ fn write_vorbis_tags(path: &Path, m: &MatchedTrack, release: &NormalizedRelease,
 
 fn looks_like_mbid(s: &str) -> bool {
     return s.len() == 36 && s.bytes().filter(|b| return *b == b'-').count() == 4;
-}
-
-fn raw_position_for(m: &MatchedTrack, release: &NormalizedRelease) -> Option<String> {
-    if m.position.is_some() {
-        return None;
-    }
-    return release
-        .tracks
-        .iter()
-        .find(|t| {
-            return t.position.is_none() && t.medium_position == m.medium_position && t.title == m.title;
-        })
-        .and_then(|t| return t.raw_position.clone());
 }
 
 fn sanitize(s: &str) -> String {

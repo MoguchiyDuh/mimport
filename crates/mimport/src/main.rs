@@ -54,6 +54,7 @@ fn run(cli: &Cli) -> mimport_core::Result<()> {
             label,
             genre,
             cover,
+            cover_art,
             track_title,
             allow_native,
             move_files,
@@ -72,6 +73,7 @@ fn run(cli: &Cli) -> mimport_core::Result<()> {
                 label: label.clone(),
                 genre: genre.clone(),
                 cover: cover.clone(),
+                cover_art: *cover_art,
                 track_title,
                 allow_native: *allow_native,
                 move_files: *move_files,
@@ -227,6 +229,7 @@ struct ImportFlags<'a> {
     label: Option<String>,
     genre: Option<String>,
     cover: Option<std::path::PathBuf>,
+    cover_art: bool,
     track_title: &'a [String],
     allow_native: bool,
     move_files: bool,
@@ -259,15 +262,6 @@ fn run_import(cli: &Cli, cfg: &Config, target: &str, release_mbid: &str, flags: 
         return Err(Error::UnresolvedTitles(tags::format_unresolved(&unresolved)));
     }
 
-    let cover_art = match &overrides.cover {
-        Some(path) => Some(mimport_core::coverart::from_local_file(path)?),
-        None if flags.dry_run => None,
-        None => {
-            let cover_client = CoverArtClient::new(&cfg.cover_art, &cfg.musicbrainz.user_agent)?;
-            cover_client.front_cover(&release.id)?
-        }
-    };
-
     let locals = import::scan_local_tracks(&dir)?;
     let report = match flags.force {
         Some(mapping_path) => import::apply_force_mapping(&locals, &release, mapping_path)?,
@@ -275,6 +269,21 @@ fn run_import(cli: &Cli, cfg: &Config, target: &str, release_mbid: &str, flags: 
     };
 
     let blocked = flags.force.is_none() && report.blocked();
+    // Resolve cover art only once we know we'll write (not blocked, not dry-run);
+    // the CAA network fetch is opt-in (--cover-art) so the common path stays offline.
+    let cover_art = if blocked || flags.dry_run {
+        None
+    } else {
+        match &overrides.cover {
+            Some(path) => Some(mimport_core::coverart::from_local_file(path)?),
+            None if flags.cover_art => {
+                let cover_client = CoverArtClient::new(&cfg.cover_art, &cfg.musicbrainz.user_agent)?;
+                cover_client.front_cover(&release.id)?
+            }
+            None => None,
+        }
+    };
+
     let mut imported: Vec<import::ImportedFile> = Vec::new();
     let mut job = job;
     if !blocked {
@@ -478,6 +487,7 @@ fn run_yt(cli: &Cli, cfg: &Config, cmd: &YtCmd) -> mimport_core::Result<()> {
     let mut norm_release = norm_release;
     norm_release.artist_credit = final_artist;
 
+    let raw_position = backfill.as_ref().and_then(|t| return t.raw_position.clone());
     let matched = vec![import::MatchedTrack {
         file: fetched.path.clone(),
         position: final_track,
@@ -485,6 +495,7 @@ fn run_yt(cli: &Cli, cfg: &Config, cmd: &YtCmd) -> mimport_core::Result<()> {
         title: final_title,
         title_native,
         recording_id,
+        raw_position,
         distance: 0.0,
         reasons: std::collections::BTreeMap::new(),
     }];
@@ -593,6 +604,7 @@ fn run_yt_playlist(
             title: track.title.clone(),
             title_native: track.title_native.clone(),
             recording_id: track.recording_id.clone(),
+            raw_position: track.raw_position.clone(),
             distance: 0.0,
             reasons: std::collections::BTreeMap::new(),
         });

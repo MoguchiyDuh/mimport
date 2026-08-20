@@ -281,7 +281,7 @@ fn score_bonus_tracks(release: &NormalizedRelease, cfg: &Scoring, b: &mut ScoreB
         return;
     }
     let tracklist = tracklist_penalty(release, cfg);
-    if tracklist.abs() > 25.0 {
+    if tracklist > cfg.bonus.edition_filler_cap {
         return;
     }
     b.push("edition bonus", cfg.bonus.edition_bonus);

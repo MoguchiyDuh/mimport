@@ -199,19 +199,38 @@ pub fn fetch_and_wait(
             let deadline = pending[i].deadline;
             let timeout_secs = pending[i].timeout_secs;
             let id = pending[i].transfer.id.clone();
-            let transfer = transfer_status(client, username, &id)?;
-            on_update(&transfer)?;
-            if is_terminal_state(&transfer.state) {
-                results.push(transfer);
-                pending.remove(i);
-                continue;
+
+            // A transient status-poll failure must not abort the whole batch;
+            // keep the file pending and retry next round until its deadline.
+            match transfer_status(client, username, &id) {
+                Ok(transfer) => {
+                    on_update(&transfer)?;
+                    if is_terminal_state(&transfer.state) {
+                        results.push(transfer);
+                        pending.remove(i);
+                        continue;
+                    }
+                    pending[i].transfer = transfer;
+                }
+                Err(e) => {
+                    if Instant::now() >= deadline {
+                        if timeout_err.is_none() {
+                            timeout_err = Some(e);
+                        }
+                        pending.remove(i);
+                        continue;
+                    }
+                    i += 1;
+                    continue;
+                }
             }
+
             if Instant::now() >= deadline {
                 let err = Error::SlskdFetchTimeout {
                     username: username.to_string(),
                     id,
                     waited_secs: timeout_secs,
-                    last_state: transfer.state,
+                    last_state: pending[i].transfer.state.clone(),
                 };
                 if timeout_err.is_none() {
                     timeout_err = Some(err);

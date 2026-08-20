@@ -19,8 +19,9 @@ Each stage is a separate, explicit command:
 5. **Fetch** — enqueue downloads by search-id/username/directory; returns a job id.
 6. **Status** — non-blocking poll of a job's transfer state.
 7. **Postfix** — strip junk tags, downsample if needed.
-8. **Import** — match files to the release's tracks, write clean tags (incl. cover art),
-   copy into the library.
+8. **Import** — match files to the release's tracks, write clean tags, copy into the
+   library. Cover art is opt-in: `--cover <img>` embeds a local image, `--cover-art`
+   fetches the front cover from the Cover Art Archive (cached on disk).
 9. **Library** — browse/query/remove over the index `import` populates.
 10. **YT fetch** — separate URL-only path for YouTube/YouTube Music sources: yt-dlp
     fetches Opus audio, tags are set manually (or backfilled from one `--release`
@@ -46,7 +47,8 @@ mimport slskd cancel <job-id|title> [--remove]
 mimport slskd browse <username> [<directory>]
 
 mimport postfix <job-id|path|title> [--dry-run]
-mimport import <job-id|path|title> --release <mbid> [--force <mapping.json>] [--dry-run]
+mimport import <job-id|path|title> --release <mbid> [--force <mapping.json>]
+                                   [--cover <img> | --cover-art] [--dry-run]
 
 mimport library list [<query>...]
 mimport library show <id>
@@ -72,7 +74,8 @@ is gitignored because it holds the credentials below; keep it out of version con
 - `[slskd]` — Soulseek daemon URL, and **username/password** (sensitive), fetch timeouts.
 - `[quality]` — postfix downsample target.
 - `[scoring]` — edition-scorer weights (optional, sane defaults).
-- `[cover_art]` — Cover Art Archive base URL (optional).
+- `[cover_art]` — Cover Art Archive base URL and disk cache dir (optional; fetch is opt-in
+  via `import --cover-art`).
 - `[yt]` — `yt_dlp_path` (optional, defaults to `yt-dlp` on `$PATH`).
 
 Sensitive values (`slskd.username`, `slskd.password`) live in `config.toml` alongside

@@ -8,10 +8,8 @@ use lofty::flac::FlacFile;
 use lofty::ogg::{OpusFile, VorbisComments};
 use serde::Serialize;
 
-use crate::audio::{self, AudioProperties};
+use crate::audio::{self, is_audio, AudioProperties};
 use crate::error::{Error, Result};
-
-const AUDIO_EXTENSIONS: &[&str] = &["flac", "opus", "mp3", "m4a"];
 
 pub const ALLOWLIST: &[&str] = &[
     "TITLE",
@@ -256,13 +254,6 @@ fn walk(dir: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
         }
     }
     return Ok(());
-}
-
-fn is_audio(path: &Path) -> bool {
-    return path
-        .extension()
-        .and_then(|e| return e.to_str())
-        .is_some_and(|e| return AUDIO_EXTENSIONS.iter().any(|a| return e.eq_ignore_ascii_case(a)));
 }
 
 pub fn quality_ok(props: &AudioProperties, target_rate: u32, target_depth: u16) -> bool {

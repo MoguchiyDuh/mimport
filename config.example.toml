@@ -22,6 +22,7 @@ target_bitdepth = 16
 
 [cover_art]
 base_url = "https://coverartarchive.org"
+# cache_dir = "/tmp/mimport-dev/cache/coverart"  # defaults under the OS cache dir
 
 [yt]
 yt_dlp_path = "yt-dlp"

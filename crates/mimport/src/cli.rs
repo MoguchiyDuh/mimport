@@ -59,6 +59,9 @@ pub enum Command {
         /// local image file to embed as cover art instead of fetching from Cover Art Archive
         #[arg(long)]
         cover: Option<PathBuf>,
+        /// fetch front cover from the Cover Art Archive (network); off by default
+        #[arg(long, conflicts_with = "cover")]
+        cover_art: bool,
         /// "<position>=<title>" manual track title override; repeatable
         #[arg(long = "track-title")]
         track_title: Vec<String>,
