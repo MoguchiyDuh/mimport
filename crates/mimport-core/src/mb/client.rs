@@ -74,8 +74,11 @@ impl MbClient {
         }
 
         let body = self.fetch_with_retry(path, &url)?;
+        // Parse before caching so a malformed 200 body isn't cached for the
+        // full TTL (default 30 days) and re-served as a permanent error.
+        let value = serde_json::from_str(&body)?;
         self.cache.put(&url, &body)?;
-        return Ok(serde_json::from_str(&body)?);
+        return Ok(value);
     }
 
     fn fetch_with_retry(&self, path: &str, url: &str) -> Result<String> {

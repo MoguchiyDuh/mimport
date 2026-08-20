@@ -20,7 +20,7 @@ pub struct ArtistResource {
     pub status: Option<String>,
     #[serde(rename = "genres", default)]
     pub genres: Vec<String>,
-    /// Empty on search results; summary-only on lookups.
+    /// Summary-only (no releases); populated on both search and lookup.
     #[serde(rename = "Albums", default)]
     pub albums: Vec<AlbumSummary>,
 }

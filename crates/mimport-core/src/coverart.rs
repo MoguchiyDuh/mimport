@@ -1,9 +1,10 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use image::imageops::FilterType;
 use image::ImageFormat;
 
+use crate::cache::cache_dir_default;
 use crate::config::CoverArtConfig;
 use crate::error::{Error, Result};
 
@@ -54,6 +55,7 @@ pub struct CoverArtClient {
     http: reqwest::blocking::Client,
     base_url: String,
     user_agent: String,
+    cache_dir: PathBuf,
 }
 
 impl CoverArtClient {
@@ -61,14 +63,45 @@ impl CoverArtClient {
         let http = reqwest::blocking::Client::builder()
             .timeout(Duration::from_secs(30))
             .build()?;
+        let cache_dir = cfg
+            .cache_dir
+            .clone()
+            .unwrap_or_else(|| return cache_dir_default("coverart"));
         return Ok(CoverArtClient {
             http,
             base_url: cfg.base_url.trim_end_matches('/').to_string(),
             user_agent: user_agent.to_string(),
+            cache_dir,
         });
     }
 
+    fn cache_path(&self, release_mbid: &str) -> PathBuf {
+        return self.cache_dir.join(format!("{release_mbid}.front-500"));
+    }
+
+    fn read_cache(&self, release_mbid: &str) -> Option<CoverArt> {
+        let bytes = std::fs::read(self.cache_path(release_mbid)).ok()?;
+        if bytes.is_empty() {
+            return None;
+        }
+        return Some(CoverArt {
+            mime: "image/jpeg".to_string(),
+            bytes,
+        });
+    }
+
+    fn write_cache(&self, release_mbid: &str, bytes: &[u8]) {
+        if std::fs::create_dir_all(&self.cache_dir).is_err() {
+            return;
+        }
+        let _ = std::fs::write(self.cache_path(release_mbid), bytes);
+    }
+
     pub fn front_cover(&self, release_mbid: &str) -> Result<Option<CoverArt>> {
+        if let Some(cached) = self.read_cache(release_mbid) {
+            return Ok(Some(cached));
+        }
+
         let url = format!("{}/release/{}/front-500", self.base_url, release_mbid);
         let resp = match self
             .http
@@ -97,6 +130,7 @@ impl CoverArtClient {
             .unwrap_or("image/jpeg")
             .to_string();
         let bytes = resp.bytes()?.to_vec();
+        self.write_cache(release_mbid, &bytes);
         return Ok(Some(CoverArt { mime, bytes }));
     }
 }

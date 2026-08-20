@@ -52,8 +52,9 @@ impl LidarrClient {
         }
 
         let body = self.fetch_with_retry(path, &url)?;
+        let value = serde_json::from_str(&body)?;
         self.cache.put(&url, &body)?;
-        return Ok(serde_json::from_str(&body)?);
+        return Ok(value);
     }
 
     fn wait_pace(&self) {

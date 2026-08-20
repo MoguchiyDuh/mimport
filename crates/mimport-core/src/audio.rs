@@ -6,6 +6,16 @@ use symphonia::core::io::MediaSourceStream;
 
 use crate::error::{Error, Result};
 
+pub const AUDIO_EXTENSIONS: &[&str] =
+    &["flac", "mp3", "m4a", "mp4", "ogg", "opus", "wav", "ape", "wv"];
+
+pub fn is_audio(path: &Path) -> bool {
+    return path
+        .extension()
+        .and_then(|e| return e.to_str())
+        .is_some_and(|e| return AUDIO_EXTENSIONS.iter().any(|a| return e.eq_ignore_ascii_case(a)));
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct AudioProperties {
     pub sample_rate: Option<u32>,
@@ -172,9 +182,7 @@ pub enum Suspicion {
 }
 
 pub fn suspect_lossy(props: &AudioProperties) -> Option<Suspicion> {
-    let Some(ratio) = props.compression_ratio() else {
-        return None;
-    };
+    let ratio = props.compression_ratio()?;
     if ratio < 0.30 {
         return Some(Suspicion::ImplausibleCompression);
     }

@@ -2,6 +2,7 @@
 
 use std::path::Path;
 
+use rusqlite::types::Value;
 use rusqlite::{params, params_from_iter, Connection};
 use serde::Serialize;
 
@@ -121,20 +122,39 @@ pub fn remove_tracks(conn: &Connection, ids: &[i64]) -> Result<()> {
 }
 
 /// All rows matching every clause (AND), sorted `artist, album, disc, track`.
+///
+/// Non-fuzzy clauses are pushed into SQL (ASCII case-folding) so the scan runs
+/// in SQLite and can use the artist/album indexes; `~fuzzy` clauses can't be
+/// expressed in SQL and are applied in memory over the reduced set.
 pub fn list_tracks(conn: &Connection, query: &[Clause]) -> Result<Vec<LibraryTrack>> {
-    let mut stmt = conn.prepare("SELECT * FROM library_tracks")?;
+    let mut where_parts: Vec<String> = Vec::new();
+    let mut params: Vec<Value> = Vec::new();
+    let mut fuzzy: Vec<&Clause> = Vec::new();
+
+    for clause in query {
+        match clause.to_sql() {
+            Some((frag, mut p)) => {
+                where_parts.push(frag);
+                params.append(&mut p);
+            }
+            None => fuzzy.push(clause),
+        }
+    }
+
+    let mut sql = String::from("SELECT * FROM library_tracks");
+    if !where_parts.is_empty() {
+        sql.push_str(" WHERE ");
+        sql.push_str(&where_parts.join(" AND "));
+    }
+    sql.push_str(" ORDER BY lower(artist), lower(album), disc_position, track_position");
+
+    let mut stmt = conn.prepare(&sql)?;
     let mut rows = stmt
-        .query_map([], row_to_track)?
+        .query_map(params_from_iter(params.iter()), row_to_track)?
         .collect::<std::result::Result<Vec<_>, _>>()?;
-    rows.retain(|t| return query.iter().all(|c| return c.matches(t)));
-    rows.sort_by(|a, b| {
-        return (a.artist.to_lowercase(), a.album.to_lowercase(), a.disc_position, a.track_position).cmp(&(
-            b.artist.to_lowercase(),
-            b.album.to_lowercase(),
-            b.disc_position,
-            b.track_position,
-        ));
-    });
+    if !fuzzy.is_empty() {
+        rows.retain(|t| return fuzzy.iter().all(|c| return c.matches(t)));
+    }
     return Ok(rows);
 }
 
@@ -190,6 +210,20 @@ impl Field {
     fn is_numeric(self) -> bool {
         return matches!(self, Field::Year | Field::Track | Field::Disc);
     }
+
+    fn column(self) -> &'static str {
+        return match self {
+            Field::Artist => "artist",
+            Field::Album => "album",
+            Field::Title => "title",
+            Field::Year => "year",
+            Field::Track => "track_position",
+            Field::Disc => "disc_position",
+            Field::Path => "path",
+            Field::Release => "release_mbid",
+            Field::Recording => "recording_id",
+        };
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -215,6 +249,77 @@ impl Clause {
         };
         return hit != self.negate;
     }
+
+    /// SQL fragment + bound params for this clause, or `None` for fuzzy
+    /// (which SQL can't express and must stay in memory).
+    fn to_sql(&self) -> Option<(String, Vec<Value>)> {
+        if matches!(self.kind, MatchKind::Fuzzy(_)) {
+            return None;
+        }
+        let cols: &[&str] = match self.field {
+            Some(f) => &[f.column()],
+            None => &["artist", "album", "title"],
+        };
+        let mut ors: Vec<String> = Vec::new();
+        let mut params: Vec<Value> = Vec::new();
+        for col in cols {
+            let (frag, mut p) = kind_sql(col, &self.kind);
+            ors.push(frag);
+            params.append(&mut p);
+        }
+        let joined = if ors.len() == 1 {
+            ors.pop().unwrap()
+        } else {
+            format!("({})", ors.join(" OR "))
+        };
+        let frag = if self.negate { format!("NOT ({joined})") } else { joined };
+        return Some((frag, params));
+    }
+}
+
+/// Builds a per-column SQL predicate for a non-fuzzy kind. Text matching is
+/// ASCII case-insensitive via `lower()`; a NULL column never matches.
+fn kind_sql(col: &str, kind: &MatchKind) -> (String, Vec<Value>) {
+    return match kind {
+        MatchKind::Substring(s) => (
+            format!("{col} IS NOT NULL AND lower({col}) LIKE '%' || lower(?) || '%' ESCAPE '\\'"),
+            vec![Value::Text(escape_like(s))],
+        ),
+        MatchKind::Exact(s) => (
+            format!("{col} IS NOT NULL AND lower({col}) = lower(?)"),
+            vec![Value::Text(s.clone())],
+        ),
+        MatchKind::Range(lo, hi) => {
+            let expr = format!("CAST({col} AS INTEGER)");
+            match (lo, hi) {
+                (Some(lo), Some(hi)) => (
+                    format!("{col} IS NOT NULL AND {expr} BETWEEN ? AND ?"),
+                    vec![Value::Integer(*lo), Value::Integer(*hi)],
+                ),
+                (Some(lo), None) => (
+                    format!("{col} IS NOT NULL AND {expr} >= ?"),
+                    vec![Value::Integer(*lo)],
+                ),
+                (None, Some(hi)) => (
+                    format!("{col} IS NOT NULL AND {expr} <= ?"),
+                    vec![Value::Integer(*hi)],
+                ),
+                (None, None) => ("0".to_string(), Vec::new()),
+            }
+        }
+        MatchKind::Fuzzy(_) => ("0".to_string(), Vec::new()),
+    };
+}
+
+fn escape_like(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        if c == '\\' || c == '%' || c == '_' {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    return out;
 }
 
 fn match_text(value: &str, kind: &MatchKind) -> bool {
@@ -315,13 +420,13 @@ fn parse_term(raw: &str) -> Result<Clause> {
                 reason: "empty range",
             });
         }
-        if let (Some(lo), Some(hi)) = (lo, hi) {
-            if lo > hi {
-                return Err(Error::QuerySyntax {
-                    term: raw.to_string(),
-                    reason: "range start exceeds end",
-                });
-            }
+        if let (Some(lo), Some(hi)) = (lo, hi)
+            && lo > hi
+        {
+            return Err(Error::QuerySyntax {
+                term: raw.to_string(),
+                reason: "range start exceeds end",
+            });
         }
         MatchKind::Range(lo, hi)
     } else {

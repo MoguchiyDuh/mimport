@@ -1,10 +1,20 @@
 //! Shared disk cache: JSON bodies keyed by URL hash, with a TTL.
 
-use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
 use crate::error::{Error, Result};
+
+/// FNV-1a 64-bit. Fixed algorithm so cache filenames stay stable across Rust
+/// versions/platforms (unlike `DefaultHasher`, which is not guaranteed stable).
+fn fnv1a(bytes: &[u8]) -> u64 {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in bytes {
+        hash ^= u64::from(*b);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    return hash;
+}
 
 pub struct DiskCache {
     dir: PathBuf,
@@ -20,9 +30,7 @@ impl DiskCache {
     }
 
     fn path_for(&self, key: &str) -> PathBuf {
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        key.hash(&mut hasher);
-        let hash = hasher.finish();
+        let hash = fnv1a(key.as_bytes());
         let slug: String = key
             .chars()
             .filter(|c| return c.is_ascii_alphanumeric())

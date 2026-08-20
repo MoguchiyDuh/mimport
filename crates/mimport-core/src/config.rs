@@ -57,12 +57,16 @@ pub struct LidarrConfig {
 pub struct CoverArtConfig {
     #[serde(default = "default_cover_art_base_url")]
     pub base_url: String,
+    /// Disk cache for fetched front covers; defaults under the OS cache dir.
+    #[serde(default)]
+    pub cache_dir: Option<PathBuf>,
 }
 
 impl Default for CoverArtConfig {
     fn default() -> Self {
         return CoverArtConfig {
             base_url: default_cover_art_base_url(),
+            cache_dir: None,
         };
     }
 }
@@ -311,6 +315,10 @@ pub struct BonusWeights {
     pub label_present: f64,
     #[serde(default = "default_edition_bonus")]
     pub edition_bonus: f64,
+    /// Max tracklist term-penalty a deluxe/expanded edition may carry and still
+    /// earn `edition_bonus`; above this it's treated as filler-heavy.
+    #[serde(default = "default_edition_filler_cap")]
+    pub edition_filler_cap: f64,
 }
 
 impl Default for BonusWeights {
@@ -319,6 +327,7 @@ impl Default for BonusWeights {
             canonical_track_count: 10.0,
             label_present: 8.0,
             edition_bonus: default_edition_bonus(),
+            edition_filler_cap: default_edition_filler_cap(),
         };
     }
 }
@@ -327,14 +336,16 @@ fn default_edition_bonus() -> f64 {
     return 15.0;
 }
 
+fn default_edition_filler_cap() -> f64 {
+    return 25.0;
+}
+
 impl Config {
     pub fn load(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref();
         let text = std::fs::read_to_string(path).map_err(|e| return Error::io(path, e))?;
         let cfg: Config = toml::from_str(&text).map_err(|e| return Error::Config(e.to_string()))?;
-        if cfg.musicbrainz.user_agent.trim().is_empty()
-            || cfg.musicbrainz.user_agent.contains("CHANGE_ME")
-        {
+        if is_unset(&cfg.musicbrainz.user_agent) {
             return Err(Error::MbUserAgentUnset {
                 value: cfg.musicbrainz.user_agent,
             });
@@ -343,7 +354,7 @@ impl Config {
             ("username", &cfg.slskd.username),
             ("password", &cfg.slskd.password),
         ] {
-            if value.trim().is_empty() || value.contains("CHANGE_ME") {
+            if is_unset(value) {
                 return Err(Error::SlskdCredsUnset {
                     field,
                     value: value.clone(),
@@ -352,4 +363,11 @@ impl Config {
         }
         return Ok(cfg);
     }
+}
+
+const UNSET_SENTINEL: &str = "CHANGE_ME";
+
+fn is_unset(value: &str) -> bool {
+    let trimmed = value.trim();
+    return trimmed.is_empty() || trimmed == UNSET_SENTINEL;
 }
