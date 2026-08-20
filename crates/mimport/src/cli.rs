@@ -72,6 +72,10 @@ pub enum Command {
         /// move matched files into the library instead of copying them
         #[arg(long = "move")]
         move_files: bool,
+        /// allow importing when some release tracks are missing (partial album);
+        /// unmatched files still block
+        #[arg(long)]
+        allow_partial: bool,
         #[arg(long)]
         dry_run: bool,
     },
