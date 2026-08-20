@@ -364,6 +364,7 @@ fn run_cover(cli: &Cli, cfg: &Config, query: &[String], fetch: bool) -> mimport_
     }
 
     let client = CoverArtClient::new(&cfg.cover_art, &cfg.musicbrainz.user_agent)?;
+    let mb_client = MbClient::new(&cfg.musicbrainz)?;
 
     let mut results = Vec::new();
     for (mbid, ts) in &by_release {
@@ -390,7 +391,16 @@ fn run_cover(cli: &Cli, cfg: &Config, query: &[String], fetch: bool) -> mimport_
             }));
             continue;
         };
-        let cover = client.front_cover(mbid)?;
+        let cover = match client.front_cover(mbid)? {
+            Some(cover) => Some(cover),
+            None => match mb_q::release_with_tracks(&mb_client, mbid) {
+                Ok(release) => match release.release_group {
+                    Some(rg) => client.front_cover_release_group(&rg.id)?,
+                    None => None,
+                },
+                Err(_) => None,
+            },
+        };
         let Some(cover) = cover else {
             results.push(serde_json::json!({
                 "release": mbid,
