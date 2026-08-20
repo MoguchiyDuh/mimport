@@ -84,13 +84,15 @@ pub enum Command {
     Library(LibraryCmd),
 
     /// Embed Cover Art Archive front covers into library tracks (grouped by
-    /// release mbid); fetches are disk-cached. Query terms filter like
+    /// release mbid). Without `--fetch`, only reports per-release cover
+    /// status. With `--fetch`, downloads (disk-cached) and embeds art in
+    /// place, replacing any existing pictures. Query terms filter like
     /// `library list`.
     Cover {
         #[arg(trailing_var_arg = true)]
         query: Vec<String>,
         #[arg(long)]
-        dry_run: bool,
+        fetch: bool,
     },
 
     #[command(subcommand)]
