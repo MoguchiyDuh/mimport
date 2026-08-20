@@ -83,6 +83,16 @@ pub enum Command {
     #[command(subcommand)]
     Library(LibraryCmd),
 
+    /// Embed Cover Art Archive front covers into library tracks (grouped by
+    /// release mbid); fetches are disk-cached. Query terms filter like
+    /// `library list`.
+    Cover {
+        #[arg(trailing_var_arg = true)]
+        query: Vec<String>,
+        #[arg(long)]
+        dry_run: bool,
+    },
+
     #[command(subcommand)]
     Yt(YtCmd),
 }

@@ -2,6 +2,7 @@ mod cli;
 mod output;
 
 use std::path::Path;
+use std::collections::BTreeMap;
 
 use clap::Parser;
 use mimport_core::coverart::CoverArtClient;
@@ -83,6 +84,7 @@ fn run(cli: &Cli) -> mimport_core::Result<()> {
             },
         ),
         Command::Library(cmd) => run_library(cli, &cfg, cmd),
+        Command::Cover { query, dry_run } => run_cover(cli, &cfg, query, *dry_run),
         Command::Yt(cmd) => run_yt(cli, &cfg, cmd),
     }
 }
@@ -348,6 +350,64 @@ fn run_library(cli: &Cli, cfg: &Config, cmd: &LibraryCmd) -> mimport_core::Resul
             output::print(&serde_json::json!({"removed": tracks, "deleted_files": deleted_files}), cli.json);
         }
     }
+    return Ok(());
+}
+
+fn run_cover(cli: &Cli, cfg: &Config, query: &[String], dry_run: bool) -> mimport_core::Result<()> {
+    let db = jobs::open(&cfg.paths.database)?;
+    let clauses = library::parse_query(query)?;
+    let tracks = library::list_tracks(&db, &clauses)?;
+
+    let client = CoverArtClient::new(&cfg.cover_art, &cfg.musicbrainz.user_agent)?;
+
+    let mut by_release: BTreeMap<Option<String>, Vec<&library::LibraryTrack>> = BTreeMap::new();
+    for t in &tracks {
+        by_release.entry(t.release_mbid.clone()).or_default().push(t);
+    }
+
+    let mut results = Vec::new();
+    for (mbid, ts) in &by_release {
+        let Some(mbid) = mbid else {
+            results.push(serde_json::json!({
+                "release": null,
+                "tracks": ts.len(),
+                "embedded": 0,
+                "reason": "no release mbid",
+            }));
+            continue;
+        };
+        let cover = client.front_cover(mbid)?;
+        let Some(cover) = cover else {
+            results.push(serde_json::json!({
+                "release": mbid,
+                "tracks": ts.len(),
+                "embedded": 0,
+                "reason": "no cover in archive",
+            }));
+            continue;
+        };
+        if dry_run {
+            results.push(serde_json::json!({
+                "release": mbid,
+                "tracks": ts.len(),
+                "embedded": 0,
+                "reason": "dry-run",
+            }));
+            continue;
+        }
+        let mut embedded = 0;
+        for t in ts {
+            if mimport_core::coverart::embed_cover(Path::new(&t.path), &cover).is_ok() {
+                embedded += 1;
+            }
+        }
+        results.push(serde_json::json!({
+            "release": mbid,
+            "tracks": ts.len(),
+            "embedded": embedded,
+        }));
+    }
+    output::print(&results, cli.json);
     return Ok(());
 }
 

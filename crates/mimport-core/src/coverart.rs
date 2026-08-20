@@ -3,6 +3,11 @@ use std::time::Duration;
 
 use image::imageops::FilterType;
 use image::ImageFormat;
+use lofty::config::{ParseOptions, WriteOptions};
+use lofty::file::AudioFile;
+use lofty::flac::FlacFile;
+use lofty::ogg::{OggPictureStorage, OpusFile};
+use lofty::picture::{MimeType, Picture, PictureType};
 
 use crate::cache::cache_dir_default;
 use crate::config::CoverArtConfig;
@@ -133,4 +138,45 @@ impl CoverArtClient {
         self.write_cache(release_mbid, &bytes);
         return Ok(Some(CoverArt { mime, bytes }));
     }
+}
+
+/// Embeds `cover` into an existing file's tag in place, preserving all other
+/// tags. Only FLAC/Opus (VorbisComments) are supported; other formats are a
+/// no-op.
+pub fn embed_cover(path: &Path, cover: &CoverArt) -> Result<()> {
+    let picture = Picture::unchecked(cover.bytes.clone())
+        .pic_type(PictureType::CoverFront)
+        .mime_type(MimeType::from_str(&cover.mime))
+        .build();
+
+    let ext = path
+        .extension()
+        .and_then(|e| return e.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+
+    let mut file = std::fs::File::open(path).map_err(|e| return Error::io(path, e))?;
+    let save = |err: lofty::error::LoftyError| {
+        return Error::Probe {
+            path: path.to_path_buf(),
+            reason: err.to_string(),
+        };
+    };
+
+    match ext.as_str() {
+        "flac" => {
+            let mut f = FlacFile::read_from(&mut file, ParseOptions::new()).map_err(save)?;
+            if let Some(vc) = f.vorbis_comments_mut() {
+                let _ = vc.insert_picture(picture, None);
+            }
+            f.save_to_path(path, WriteOptions::default()).map_err(save)?;
+        }
+        "opus" => {
+            let mut f = OpusFile::read_from(&mut file, ParseOptions::new()).map_err(save)?;
+            let _ = f.vorbis_comments_mut().insert_picture(picture, None);
+            f.save_to_path(path, WriteOptions::default()).map_err(save)?;
+        }
+        _ => return Ok(()),
+    }
+    return Ok(());
 }
