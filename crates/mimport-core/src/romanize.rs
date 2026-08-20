@@ -33,19 +33,21 @@ fn is_non_latin_char(c: char) -> bool {
     );
 }
 
-/// Picks the best Latin-script alias: junk hint types are excluded, primary
-/// aliases win, then `en*`-locale aliases, then the first remaining in MB's
-/// own order.
+/// Picks the best Latin-script alias: junk hint types are excluded, `en*`
+/// (English translation) locales are excluded (romaji/Latn wins, en-only
+/// fields are left unresolved for manual handling), `*-Latn` (romaji) locales
+/// win, then primary aliases, then the first remaining in MB's own order.
 pub fn pick_alias(aliases: &[Alias]) -> Option<String> {
     let mut candidates: Vec<&Alias> = aliases
         .iter()
         .filter(|a| return !is_non_latin(&a.name))
         .filter(|a| return !a.alias_type.as_deref().is_some_and(|t| return JUNK_ALIAS_TYPES.contains(&t)))
+        .filter(|a| return !a.locale.as_deref().is_some_and(|l| return l.starts_with("en")))
         .collect();
     candidates.sort_by_key(|a| {
+        let romaji_rank = if a.locale.as_deref().is_some_and(|l| return l.ends_with("Latn")) { 0 } else { 1 };
         let primary_rank = if a.primary == Some(true) { 0 } else { 1 };
-        let locale_rank = if a.locale.as_deref().is_some_and(|l| return l.starts_with("en")) { 0 } else { 1 };
-        return (primary_rank, locale_rank);
+        return (romaji_rank, primary_rank);
     });
     return candidates.first().map(|a| return a.name.clone());
 }
