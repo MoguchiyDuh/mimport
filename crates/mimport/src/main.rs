@@ -58,6 +58,7 @@ fn run(cli: &Cli) -> mimport_core::Result<()> {
             track_title,
             allow_native,
             move_files,
+            allow_partial,
             dry_run,
         } => run_import(
             cli,
@@ -77,6 +78,7 @@ fn run(cli: &Cli) -> mimport_core::Result<()> {
                 track_title,
                 allow_native: *allow_native,
                 move_files: *move_files,
+                allow_partial: *allow_partial,
                 dry_run: *dry_run,
             },
         ),
@@ -233,6 +235,7 @@ struct ImportFlags<'a> {
     track_title: &'a [String],
     allow_native: bool,
     move_files: bool,
+    allow_partial: bool,
     dry_run: bool,
 }
 
@@ -268,7 +271,11 @@ fn run_import(cli: &Cli, cfg: &Config, target: &str, release_mbid: &str, flags: 
         None => import::match_tracks(&locals, &release),
     };
 
-    let blocked = flags.force.is_none() && report.blocked();
+    let blocked = match flags.force {
+        Some(_) => false,
+        None if flags.allow_partial => report.blocked_unmatched(),
+        None => report.blocked(),
+    };
     // Resolve cover art only once we know we'll write (not blocked, not dry-run);
     // the CAA network fetch is opt-in (--cover-art) so the common path stays offline.
     let cover_art = if blocked || flags.dry_run {

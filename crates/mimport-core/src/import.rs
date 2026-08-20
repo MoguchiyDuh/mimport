@@ -78,6 +78,12 @@ impl MatchReport {
     pub fn blocked(&self) -> bool {
         return !self.unmatched_files.is_empty() || !self.missing_tracks.is_empty();
     }
+
+    /// Blocks only on unmatched files; missing release tracks (a partial
+    /// album) are allowed and merely reported, not fatal.
+    pub fn blocked_unmatched(&self) -> bool {
+        return !self.unmatched_files.is_empty();
+    }
 }
 
 /// Reads local audio files (a dir or a single file) into `LocalTrack`s.
