@@ -4,10 +4,11 @@ use std::time::Duration;
 use image::imageops::FilterType;
 use image::ImageFormat;
 use lofty::config::{ParseOptions, WriteOptions};
-use lofty::file::AudioFile;
+use lofty::file::{AudioFile, TaggedFileExt};
 use lofty::flac::FlacFile;
 use lofty::ogg::{OggPictureStorage, OpusFile};
 use lofty::picture::{MimeType, Picture, PictureType};
+use lofty::probe::read_from_path;
 
 use crate::cache::cache_dir_default;
 use crate::config::CoverArtConfig;
@@ -140,9 +141,20 @@ impl CoverArtClient {
     }
 }
 
+/// True if the file already carries at least one embedded picture.
+pub fn has_embedded_cover(path: &Path) -> bool {
+    let Ok(tagged) = read_from_path(path) else {
+        return false;
+    };
+    let Some(tag) = tagged.primary_tag() else {
+        return false;
+    };
+    return !tag.pictures().is_empty();
+}
+
 /// Embeds `cover` into an existing file's tag in place, preserving all other
-/// tags. Only FLAC/Opus (VorbisComments) are supported; other formats are a
-/// no-op.
+/// tags and replacing any previously embedded pictures. Only FLAC/Opus
+/// (VorbisComments) are supported; other formats are a no-op.
 pub fn embed_cover(path: &Path, cover: &CoverArt) -> Result<()> {
     let picture = Picture::unchecked(cover.bytes.clone())
         .pic_type(PictureType::CoverFront)
@@ -167,12 +179,14 @@ pub fn embed_cover(path: &Path, cover: &CoverArt) -> Result<()> {
         "flac" => {
             let mut f = FlacFile::read_from(&mut file, ParseOptions::new()).map_err(save)?;
             if let Some(vc) = f.vorbis_comments_mut() {
+                let _ = vc.remove_pictures();
                 let _ = vc.insert_picture(picture, None);
             }
             f.save_to_path(path, WriteOptions::default()).map_err(save)?;
         }
         "opus" => {
             let mut f = OpusFile::read_from(&mut file, ParseOptions::new()).map_err(save)?;
+            f.vorbis_comments_mut().remove_pictures();
             let _ = f.vorbis_comments_mut().insert_picture(picture, None);
             f.save_to_path(path, WriteOptions::default()).map_err(save)?;
         }
