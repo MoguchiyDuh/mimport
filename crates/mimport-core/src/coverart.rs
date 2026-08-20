@@ -104,11 +104,22 @@ impl CoverArtClient {
     }
 
     pub fn front_cover(&self, release_mbid: &str) -> Result<Option<CoverArt>> {
-        if let Some(cached) = self.read_cache(release_mbid) {
+        return self.fetch(&format!("release/{release_mbid}"), release_mbid);
+    }
+
+    pub fn front_cover_release_group(&self, release_group_mbid: &str) -> Result<Option<CoverArt>> {
+        return self.fetch(
+            &format!("release-group/{release_group_mbid}"),
+            &format!("rg-{release_group_mbid}"),
+        );
+    }
+
+    fn fetch(&self, path: &str, cache_key: &str) -> Result<Option<CoverArt>> {
+        if let Some(cached) = self.read_cache(cache_key) {
             return Ok(Some(cached));
         }
 
-        let url = format!("{}/release/{}/front-500", self.base_url, release_mbid);
+        let url = format!("{}/{}/front-500", self.base_url, path);
         let resp = match self
             .http
             .get(&url)
@@ -117,7 +128,7 @@ impl CoverArtClient {
         {
             Ok(resp) => resp,
             Err(e) => {
-                tracing::warn!("cover art fetch failed for {release_mbid}: {e}; importing without art");
+                tracing::warn!("cover art fetch failed for {cache_key}: {e}; importing without art");
                 return Ok(None);
             }
         };
@@ -125,7 +136,7 @@ impl CoverArtClient {
         if !status.is_success() {
             if status.as_u16() != 404 {
                 let body = resp.text().unwrap_or_default();
-                tracing::warn!("cover art fetch failed for {release_mbid}: HTTP {status} {body}; importing without art");
+                tracing::warn!("cover art fetch failed for {cache_key}: HTTP {status} {body}; importing without art");
             }
             return Ok(None);
         }
@@ -136,7 +147,7 @@ impl CoverArtClient {
             .unwrap_or("image/jpeg")
             .to_string();
         let bytes = resp.bytes()?.to_vec();
-        self.write_cache(release_mbid, &bytes);
+        self.write_cache(cache_key, &bytes);
         return Ok(Some(CoverArt { mime, bytes }));
     }
 }
