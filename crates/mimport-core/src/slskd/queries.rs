@@ -15,7 +15,8 @@ const POLL_INTERVAL: Duration = Duration::from_millis(1500);
 
 pub fn search(client: &SlskdClient, query: &str) -> Result<Search> {
     let req = SearchRequest::new(query);
-    let submitted: Search = client.post_with_timeout("/api/v0/searches", &req, SEARCH_REQUEST_TIMEOUT)?;
+    let submitted: Search =
+        client.post_with_timeout("/api/v0/searches", &req, SEARCH_REQUEST_TIMEOUT)?;
 
     let mut current = submitted;
     let deadline = Instant::now() + SEARCH_REQUEST_TIMEOUT;
@@ -123,7 +124,11 @@ pub fn cancel_transfer(client: &SlskdClient, username: &str, id: &str, remove: b
     return client.delete(&path);
 }
 
-pub fn browse_directory(client: &SlskdClient, username: &str, directory: &str) -> Result<Vec<Directory>> {
+pub fn browse_directory(
+    client: &SlskdClient,
+    username: &str,
+    directory: &str,
+) -> Result<Vec<Directory>> {
     let path = format!("/api/v0/users/{}/directory", urlencode(username));
     let body = DirectoryContentsRequest {
         directory: directory.to_string(),
@@ -167,7 +172,10 @@ pub fn fetch_and_wait(
         return Err(Error::Slskd {
             what: "enqueue",
             status: 0,
-            body: format!("no transfers returned in enqueued[] (failed: {:?})", enqueued.failed),
+            body: format!(
+                "no transfers returned in enqueued[] (failed: {:?})",
+                enqueued.failed
+            ),
         });
     }
     for t in &enqueued.enqueued {
@@ -270,4 +278,3 @@ fn urlencode(s: &str) -> String {
     }
     return out;
 }
-

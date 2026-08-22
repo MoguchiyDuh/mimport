@@ -9,7 +9,7 @@ use lofty::ogg::{OggPictureStorage, VorbisComments};
 use lofty::picture::{MimeType, Picture, PictureType};
 use lofty::probe::read_from_path;
 use lofty::tag::{Accessor, ItemKey, Tag, TagExt, TagType};
-use pathfinding::prelude::{kuhn_munkres_min, Matrix};
+use pathfinding::prelude::{Matrix, kuhn_munkres_min};
 use serde::{Deserialize, Serialize};
 
 use crate::audio::is_audio;
@@ -112,7 +112,7 @@ fn walk(dir: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
         let path = entry.path();
         if path.is_dir() {
             walk(&path, out)?;
-        } else if is_audio(&path) {
+        } else if is_audio(&path) && !crate::audio::is_temp_file(&path) {
             out.push(path);
         }
     }
@@ -132,7 +132,8 @@ fn read_local_track(path: &Path) -> Result<LocalTrack> {
             t.title().map(|c| return c.to_string()),
             t.artist().map(|c| return c.to_string()),
             t.track(),
-            t.get_string(ItemKey::MusicBrainzRecordingId).map(|s| return s.to_string()),
+            t.get_string(ItemKey::MusicBrainzRecordingId)
+                .map(|s| return s.to_string()),
         ),
         None => (None, None, None, None),
     };
@@ -159,7 +160,14 @@ fn filename_hint(path: &Path) -> (Option<String>, Option<u32>) {
         }
         _ => (None, stem),
     };
-    return (if title.is_empty() { None } else { Some(title.to_string()) }, num);
+    return (
+        if title.is_empty() {
+            None
+        } else {
+            Some(title.to_string())
+        },
+        num,
+    );
 }
 
 struct Distance {
@@ -167,7 +175,11 @@ struct Distance {
     reasons: BTreeMap<&'static str, f64>,
 }
 
-fn track_distance(local: &LocalTrack, track: &NormalizedTrack, release_artist: Option<&str>) -> Distance {
+fn track_distance(
+    local: &LocalTrack,
+    track: &NormalizedTrack,
+    release_artist: Option<&str>,
+) -> Distance {
     let mut reasons = BTreeMap::new();
     // Normalize by the weight of signals that had data on both sides, not the
     // constant total: a sparsely-tagged file must not score artificially low.
@@ -223,7 +235,11 @@ fn track_distance(local: &LocalTrack, track: &NormalizedTrack, release_artist: O
     };
     reasons.insert("track_index", index_cost * W_INDEX);
 
-    let denom = if present_weight > 0.0 { present_weight } else { TOTAL_WEIGHT };
+    let denom = if present_weight > 0.0 {
+        present_weight
+    } else {
+        TOTAL_WEIGHT
+    };
     let total: f64 = reasons.values().sum::<f64>() / denom;
     return Distance { total, reasons };
 }
@@ -247,7 +263,11 @@ pub fn match_tracks(locals: &[LocalTrack], release: &NormalizedRelease) -> Match
     for local in locals {
         let mut row = Vec::with_capacity(m);
         for track in &release.tracks {
-            row.push(track_distance(local, track, release.artist_credit.as_deref()));
+            row.push(track_distance(
+                local,
+                track,
+                release.artist_credit.as_deref(),
+            ));
         }
         real_distances.push(row);
     }
@@ -324,10 +344,15 @@ enum ForceTarget {
     Full { position: u32, disc: Option<u32> },
 }
 
-pub fn apply_force_mapping(locals: &[LocalTrack], release: &NormalizedRelease, mapping_path: &Path) -> Result<MatchReport> {
-    let text = std::fs::read_to_string(mapping_path).map_err(|e| return Error::io(mapping_path, e))?;
-    let mapping: BTreeMap<String, ForceTarget> =
-        serde_json::from_str(&text).map_err(|e| return Error::ForceMapping(format!("{}: {e}", mapping_path.display())))?;
+pub fn apply_force_mapping(
+    locals: &[LocalTrack],
+    release: &NormalizedRelease,
+    mapping_path: &Path,
+) -> Result<MatchReport> {
+    let text =
+        std::fs::read_to_string(mapping_path).map_err(|e| return Error::io(mapping_path, e))?;
+    let mapping: BTreeMap<String, ForceTarget> = serde_json::from_str(&text)
+        .map_err(|e| return Error::ForceMapping(format!("{}: {e}", mapping_path.display())))?;
 
     let mut matched = Vec::new();
     let mut matched_tracks: HashSet<usize> = HashSet::new();
@@ -335,9 +360,14 @@ pub fn apply_force_mapping(locals: &[LocalTrack], release: &NormalizedRelease, m
 
     for (file_str, target) in &mapping {
         let file_path = PathBuf::from(file_str);
-        let local = locals.iter().find(|l| return l.path == file_path).ok_or_else(|| {
-            return Error::ForceMapping(format!("{file_str:?} is not one of the scanned local files"));
-        })?;
+        let local = locals
+            .iter()
+            .find(|l| return l.path == file_path)
+            .ok_or_else(|| {
+                return Error::ForceMapping(format!(
+                    "{file_str:?} is not one of the scanned local files"
+                ));
+            })?;
         let (position, disc) = match target {
             ForceTarget::Pos(position) => (*position, None),
             ForceTarget::Full { position, disc } => (*position, *disc),
@@ -359,7 +389,9 @@ pub fn apply_force_mapping(locals: &[LocalTrack], release: &NormalizedRelease, m
                 )));
             }
             (None, _) => {
-                return Err(Error::ForceMapping(format!("no track at position {position} in the release")));
+                return Err(Error::ForceMapping(format!(
+                    "no track at position {position} in the release"
+                )));
             }
         };
         if !matched_tracks.insert(j) {
@@ -415,7 +447,7 @@ pub struct ImportOptions {
     pub move_files: bool,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct ImportedFile {
     pub source: PathBuf,
     pub dest: PathBuf,
@@ -439,8 +471,16 @@ fn place_file(source: &Path, dest: &Path, move_files: bool) -> Result<()> {
 
 /// Copies (or moves, with `ImportOptions::move_files`) each matched file into
 /// the library layout and writes clean tags onto the placed copy.
-pub fn write_and_copy(matched: &[MatchedTrack], release: &NormalizedRelease, opts: &ImportOptions, cover_art: Option<&CoverArt>) -> Result<Vec<ImportedFile>> {
-    let multi_disc = release.tracks.iter().any(|t| return t.medium_position.unwrap_or(1) > 1);
+pub fn write_and_copy(
+    matched: &[MatchedTrack],
+    release: &NormalizedRelease,
+    opts: &ImportOptions,
+    cover_art: Option<&CoverArt>,
+) -> Result<Vec<ImportedFile>> {
+    let multi_disc = release
+        .tracks
+        .iter()
+        .any(|t| return t.medium_position.unwrap_or(1) > 1);
     let artist_dir = sanitize(release.artist_credit.as_deref().unwrap_or("Unknown Artist"));
     let year = release.year().unwrap_or("");
     let album_dir = if year.is_empty() {
@@ -455,7 +495,11 @@ pub fn write_and_copy(matched: &[MatchedTrack], release: &NormalizedRelease, opt
     let mut plan: Vec<ImportedFile> = Vec::with_capacity(matched.len());
     let mut seen: HashSet<PathBuf> = HashSet::new();
     for m in matched {
-        let ext = m.file.extension().and_then(|e| return e.to_str()).unwrap_or("");
+        let ext = m
+            .file
+            .extension()
+            .and_then(|e| return e.to_str())
+            .unwrap_or("");
         let track_prefix = match m.position {
             Some(p) => format!("{p:02}"),
             None => m
@@ -471,18 +515,28 @@ pub fn write_and_copy(matched: &[MatchedTrack], release: &NormalizedRelease, opt
         } else {
             format!("{track_prefix} - {}.{ext}", sanitize(&m.title))
         };
-        let dest = opts.library_root.join(&artist_dir).join(&album_dir).join(filename);
+        let dest = opts
+            .library_root
+            .join(&artist_dir)
+            .join(&album_dir)
+            .join(filename);
 
         if !seen.insert(dest.clone()) {
             return Err(Error::io(
                 &dest,
-                std::io::Error::new(std::io::ErrorKind::AlreadyExists, "two matched files resolve to the same destination"),
+                std::io::Error::new(
+                    std::io::ErrorKind::AlreadyExists,
+                    "two matched files resolve to the same destination",
+                ),
             ));
         }
         if !opts.dry_run && dest.exists() && !same_file(&m.file, &dest) {
             return Err(Error::io(
                 &dest,
-                std::io::Error::new(std::io::ErrorKind::AlreadyExists, "destination already exists"),
+                std::io::Error::new(
+                    std::io::ErrorKind::AlreadyExists,
+                    "destination already exists",
+                ),
             ));
         }
         plan.push(ImportedFile {
@@ -495,14 +549,31 @@ pub fn write_and_copy(matched: &[MatchedTrack], release: &NormalizedRelease, opt
         return Ok(plan);
     }
 
-    for (m, imported) in matched.iter().zip(plan.iter()) {
-        if let Some(parent) = imported.dest.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| return Error::io(parent, e))?;
+    let mut placed: Vec<(ImportedFile, bool)> = Vec::new();
+    let result: std::result::Result<(), Error> = (|| {
+        for (m, imported) in matched.iter().zip(plan.iter()) {
+            if let Some(parent) = imported.dest.parent() {
+                std::fs::create_dir_all(parent).map_err(|e| return Error::io(parent, e))?;
+            }
+            let moved = opts.move_files && !same_file(&imported.source, &imported.dest);
+            if !same_file(&imported.source, &imported.dest) {
+                place_file(&imported.source, &imported.dest, opts.move_files)?;
+            }
+            placed.push((imported.clone(), moved));
+            write_tags(&imported.dest, m, release, cover_art)?;
         }
-        if !same_file(&imported.source, &imported.dest) {
-            place_file(&imported.source, &imported.dest, opts.move_files)?;
+        return Ok(());
+    })();
+
+    if let Err(e) = result {
+        for (imported, was_moved) in placed.iter().rev() {
+            if *was_moved {
+                let _ = std::fs::rename(&imported.dest, &imported.source);
+            } else if !same_file(&imported.source, &imported.dest) {
+                let _ = std::fs::remove_file(&imported.dest);
+            }
         }
-        write_tags(&imported.dest, m, release, cover_art)?;
+        return Err(e);
     }
     return Ok(plan);
 }
@@ -526,7 +597,12 @@ fn same_file(a: &Path, b: &Path) -> bool {
 /// generic `Tag` for those two fields is silently dropped on save. Native
 /// (CJK/etc) artist/album titles ride in raw `ORIGINALARTIST`/
 /// `ORIGINALALBUMTITLE` vorbis fields instead.
-fn write_tags(path: &Path, m: &MatchedTrack, release: &NormalizedRelease, cover_art: Option<&CoverArt>) -> Result<()> {
+fn write_tags(
+    path: &Path,
+    m: &MatchedTrack,
+    release: &NormalizedRelease,
+    cover_art: Option<&CoverArt>,
+) -> Result<()> {
     let mut tagged = read_from_path(path).map_err(|e| {
         return Error::Probe {
             path: path.to_path_buf(),
@@ -595,12 +671,14 @@ fn write_tags(path: &Path, m: &MatchedTrack, release: &NormalizedRelease, cover_
     }
 
     let _ = tagged.insert_tag(tag);
-    tagged.save_to_path(path, WriteOptions::default()).map_err(|e| {
-        return Error::Probe {
-            path: path.to_path_buf(),
-            reason: e.to_string(),
-        };
-    })?;
+    tagged
+        .save_to_path(path, WriteOptions::default())
+        .map_err(|e| {
+            return Error::Probe {
+                path: path.to_path_buf(),
+                reason: e.to_string(),
+            };
+        })?;
     return Ok(());
 }
 
@@ -615,7 +693,12 @@ fn disc_total_for(m: &MatchedTrack, release: &NormalizedRelease) -> usize {
     };
 }
 
-fn write_vorbis_tags(path: &Path, m: &MatchedTrack, release: &NormalizedRelease, cover_art: Option<&CoverArt>) -> Result<()> {
+fn write_vorbis_tags(
+    path: &Path,
+    m: &MatchedTrack,
+    release: &NormalizedRelease,
+    cover_art: Option<&CoverArt>,
+) -> Result<()> {
     let mut vc = VorbisComments::new();
 
     vc.set_title(m.title.clone());
@@ -671,12 +754,13 @@ fn write_vorbis_tags(path: &Path, m: &MatchedTrack, release: &NormalizedRelease,
         let _ = vc.insert_picture(picture, None);
     }
 
-    vc.save_to_path(path, WriteOptions::default()).map_err(|e| {
-        return Error::Probe {
-            path: path.to_path_buf(),
-            reason: e.to_string(),
-        };
-    })?;
+    vc.save_to_path(path, WriteOptions::default())
+        .map_err(|e| {
+            return Error::Probe {
+                path: path.to_path_buf(),
+                reason: e.to_string(),
+            };
+        })?;
     return Ok(());
 }
 

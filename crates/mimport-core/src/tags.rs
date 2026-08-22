@@ -12,8 +12,8 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use crate::error::{Error, Result};
-use crate::mb::queries as mb_q;
 use crate::mb::MbClient;
+use crate::mb::queries as mb_q;
 use crate::release::NormalizedRelease;
 use crate::romanize::{is_non_latin, pick_alias};
 
@@ -45,7 +45,8 @@ pub struct FlagOverrides<'a> {
 impl TagOverrides {
     pub fn load(path: &Path) -> Result<Self> {
         let text = std::fs::read_to_string(path).map_err(|e| return Error::io(path, e))?;
-        return serde_json::from_str(&text).map_err(|e| return Error::TagOverrides(format!("{}: {e}", path.display())));
+        return serde_json::from_str(&text)
+            .map_err(|e| return Error::TagOverrides(format!("{}: {e}", path.display())));
     }
 
     /// CLI flags win over whatever the `--tags` file set for the same field.
@@ -70,12 +71,15 @@ impl TagOverrides {
         }
         for raw in flags.track_titles {
             let (pos_str, title) = raw.split_once('=').ok_or_else(|| {
-                return Error::TagOverrides(format!("--track-title {raw:?} must be \"<position>=<title>\""));
+                return Error::TagOverrides(format!(
+                    "--track-title {raw:?} must be \"<position>=<title>\""
+                ));
             })?;
-            let pos: u32 = pos_str
-                .trim()
-                .parse()
-                .map_err(|_| return Error::TagOverrides(format!("--track-title {raw:?} has a non-numeric position")))?;
+            let pos: u32 = pos_str.trim().parse().map_err(|_| {
+                return Error::TagOverrides(format!(
+                    "--track-title {raw:?} has a non-numeric position"
+                ));
+            })?;
             self.tracks.insert(pos, title.to_string());
         }
         return Ok(());
@@ -99,20 +103,35 @@ pub fn format_unresolved(unresolved: &[Unresolved]) -> String {
 /// Applies `overrides` and MB romanization aliases to `release` in place.
 /// Returns every non-Latin field that neither an override nor an alias
 /// resolved.
-pub fn resolve(client: &MbClient, release: &mut NormalizedRelease, overrides: &TagOverrides) -> Vec<Unresolved> {
+pub fn resolve(
+    client: &MbClient,
+    release: &mut NormalizedRelease,
+    overrides: &TagOverrides,
+) -> Vec<Unresolved> {
     let mut unresolved = Vec::new();
 
     resolve_album(client, release, overrides, &mut unresolved);
     resolve_artist(client, release, overrides, &mut unresolved);
-    release.date = overrides.date.clone().or_else(|| return release.date.clone());
-    release.label = overrides.label.clone().or_else(|| return release.label.clone());
+    release.date = overrides
+        .date
+        .clone()
+        .or_else(|| return release.date.clone());
+    release.label = overrides
+        .label
+        .clone()
+        .or_else(|| return release.label.clone());
     release.genre = overrides.genre.clone();
     resolve_tracks(client, release, overrides, &mut unresolved);
 
     return unresolved;
 }
 
-fn resolve_album(client: &MbClient, release: &mut NormalizedRelease, overrides: &TagOverrides, unresolved: &mut Vec<Unresolved>) {
+fn resolve_album(
+    client: &MbClient,
+    release: &mut NormalizedRelease,
+    overrides: &TagOverrides,
+    unresolved: &mut Vec<Unresolved>,
+) {
     if let Some(album) = &overrides.album {
         if *album != release.title {
             release.title_native = Some(release.title.clone());
@@ -135,11 +154,19 @@ fn resolve_album(client: &MbClient, release: &mut NormalizedRelease, overrides: 
             release.title_native = Some(native);
             release.title = r;
         }
-        None => unresolved.push(Unresolved { field: "album".to_string(), native }),
+        None => unresolved.push(Unresolved {
+            field: "album".to_string(),
+            native,
+        }),
     }
 }
 
-fn resolve_artist(client: &MbClient, release: &mut NormalizedRelease, overrides: &TagOverrides, unresolved: &mut Vec<Unresolved>) {
+fn resolve_artist(
+    client: &MbClient,
+    release: &mut NormalizedRelease,
+    overrides: &TagOverrides,
+    unresolved: &mut Vec<Unresolved>,
+) {
     if release.artist_credit_parts.is_empty() {
         // Lidarr path (no artist field at all) or synthetic yt release: still
         // honor a manual override, but there's nothing to romanize.
@@ -171,7 +198,11 @@ fn resolve_artist(client: &MbClient, release: &mut NormalizedRelease, overrides:
     let mut all_resolved = true;
     for part in &release.artist_credit_parts {
         if is_non_latin(&part.name) {
-            match mb_q::artist_aliases(client, &part.id).ok().as_deref().and_then(pick_alias) {
+            match mb_q::artist_aliases(client, &part.id)
+                .ok()
+                .as_deref()
+                .and_then(pick_alias)
+            {
                 Some(r) => rejoined.push_str(&r),
                 None => {
                     all_resolved = false;
@@ -187,11 +218,19 @@ fn resolve_artist(client: &MbClient, release: &mut NormalizedRelease, overrides:
         release.artist_credit_native = Some(native_joined);
         release.artist_credit = Some(rejoined);
     } else {
-        unresolved.push(Unresolved { field: "artist".to_string(), native: native_joined });
+        unresolved.push(Unresolved {
+            field: "artist".to_string(),
+            native: native_joined,
+        });
     }
 }
 
-fn resolve_tracks(client: &MbClient, release: &mut NormalizedRelease, overrides: &TagOverrides, unresolved: &mut Vec<Unresolved>) {
+fn resolve_tracks(
+    client: &MbClient,
+    release: &mut NormalizedRelease,
+    overrides: &TagOverrides,
+    unresolved: &mut Vec<Unresolved>,
+) {
     for t in &mut release.tracks {
         let manual = t.position.and_then(|p| return overrides.tracks.get(&p));
         if let Some(title) = manual {

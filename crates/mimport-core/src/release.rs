@@ -1,7 +1,7 @@
 use serde::Serialize;
 
 use crate::lidarr::types::ReleaseResource as LidarrRelease;
-use crate::mb::types::{join_artist_credit, Release as MbRelease};
+use crate::mb::types::{Release as MbRelease, join_artist_credit};
 
 #[derive(Debug, Clone, Serialize)]
 pub struct NormalizedRelease {
@@ -62,7 +62,10 @@ pub struct NormalizedTrack {
 impl NormalizedRelease {
     /// First `-`-delimited component of `date` (the year), or `None`.
     pub fn year(&self) -> Option<&str> {
-        return self.date.as_deref().and_then(|d| return d.split('-').next());
+        return self
+            .date
+            .as_deref()
+            .and_then(|d| return d.split('-').next());
     }
 }
 
@@ -141,7 +144,11 @@ impl From<MbRelease> for NormalizedRelease {
 
 impl From<LidarrRelease> for NormalizedRelease {
     fn from(r: LidarrRelease) -> Self {
-        let formats = r.media.iter().filter_map(|m| return m.format.clone()).collect();
+        let formats = r
+            .media
+            .iter()
+            .filter_map(|m| return m.format.clone())
+            .collect();
         let country = r.country.first().cloned();
         let label = r.label.first().cloned();
         let date = r.release_date.clone();

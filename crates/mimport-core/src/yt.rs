@@ -25,7 +25,12 @@ pub struct FetchedAudio {
 /// mode `--ignore-errors` lets a dead/unavailable entry be skipped rather than
 /// aborting the whole batch — yt-dlp still emits a `--print` line per entry that
 /// did download, with its original `playlist_index` preserved.
-pub fn fetch(cfg: &YtConfig, url: &str, staging_dir: &Path, playlist: bool) -> Result<Vec<FetchedAudio>> {
+pub fn fetch(
+    cfg: &YtConfig,
+    url: &str,
+    staging_dir: &Path,
+    playlist: bool,
+) -> Result<Vec<FetchedAudio>> {
     std::fs::create_dir_all(staging_dir).map_err(|e| return Error::io(staging_dir, e))?;
 
     let out_template = staging_dir.join("%(id)s.%(ext)s");
@@ -63,7 +68,10 @@ pub fn fetch(cfg: &YtConfig, url: &str, staging_dir: &Path, playlist: bool) -> R
         return Err(Error::ToolFailed {
             tool: "yt-dlp",
             status: output.status.to_string(),
-            stderr: String::from_utf8_lossy(&output.stderr).chars().take(600).collect(),
+            stderr: String::from_utf8_lossy(&output.stderr)
+                .chars()
+                .take(600)
+                .collect(),
         });
     }
     if !output.status.success() {
@@ -89,7 +97,11 @@ pub fn fetch(cfg: &YtConfig, url: &str, staging_dir: &Path, playlist: bool) -> R
         };
         let video_id = parts[1].to_string();
         let candidate = staging_dir.join(format!("{video_id}.jpg"));
-        let thumbnail = if candidate.exists() { Some(candidate) } else { None };
+        let thumbnail = if candidate.exists() {
+            Some(candidate)
+        } else {
+            None
+        };
         tracks.push(FetchedAudio {
             path: PathBuf::from(parts[5]),
             video_id,

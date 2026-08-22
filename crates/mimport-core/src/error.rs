@@ -59,7 +59,9 @@ pub enum Error {
     #[error("slskd has no user or peer resource at {what} (peer likely offline)")]
     SlskdNotFound { what: String },
 
-    #[error("slskd transfer {username}/{id} timed out waiting for completion after {waited_secs}s (last state: {last_state})")]
+    #[error(
+        "slskd transfer {username}/{id} timed out waiting for completion after {waited_secs}s (last state: {last_state})"
+    )]
     SlskdFetchTimeout {
         username: String,
         id: String,
@@ -122,7 +124,9 @@ pub enum Error {
     #[error("`yt fetch` fetched no tracks")]
     YtEmptyFetch,
 
-    #[error("release has non-Latin fields with no MusicBrainz romanization alias; supply --tags/--track-title or pass --allow-native:\n{0}")]
+    #[error(
+        "release has non-Latin fields with no MusicBrainz romanization alias; supply --tags/--track-title or pass --allow-native:\n{0}"
+    )]
     UnresolvedTitles(String),
 
     #[error("--tags file invalid: {0}")]
@@ -130,6 +134,9 @@ pub enum Error {
 
     #[error("failed to preprocess cover image at {path}: {reason}")]
     CoverPreprocess { path: PathBuf, reason: String },
+
+    #[error("cover art fetch failed for {url}: {reason}")]
+    CoverFetch { url: String, reason: String },
 }
 
 impl Error {

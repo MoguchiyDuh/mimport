@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{Connection, OptionalExtension, params};
 use serde::Serialize;
 
 use crate::error::{Error, Result};
@@ -11,6 +11,7 @@ pub const STATUS_INCOMPLETE: &str = "incomplete";
 pub const STATUS_FETCHED: &str = "fetched";
 pub const STATUS_PARTIAL: &str = "partial";
 pub const STATUS_FAILED: &str = "failed";
+pub const STATUS_CANCELLED: &str = "cancelled";
 pub const STATUS_POSTFIXED: &str = "postfixed";
 pub const STATUS_IMPORTED: &str = "imported";
 
@@ -77,10 +78,26 @@ fn ensure_schema(conn: &Connection) -> Result<()> {
     return Ok(());
 }
 
-/// `<downloads_root>/<basename of the remote directory>`.
-pub fn local_dir_for(downloads_root: &Path, remote_directory: &str) -> PathBuf {
-    let basename = remote_directory.rsplit('\\').next().unwrap_or(remote_directory);
-    return downloads_root.join(basename);
+/// `<downloads_root>/<username>/<basename of the remote directory>`.
+/// Namespaced by peer so two directories with the same basename (a very
+/// common Soulseek case — "Discography", album names) can't interleave.
+pub fn local_dir_for(downloads_root: &Path, username: &str, remote_directory: &str) -> PathBuf {
+    let basename = remote_directory
+        .rsplit('\\')
+        .next()
+        .unwrap_or(remote_directory);
+    return downloads_root
+        .join(sanitize_dir_segment(username))
+        .join(basename);
+}
+
+fn sanitize_dir_segment(s: &str) -> String {
+    return s
+        .chars()
+        .map(|c| return if "/\\:*?\"<>|".contains(c) { '_' } else { c })
+        .collect::<String>()
+        .trim()
+        .to_string();
 }
 
 pub fn default_title(remote_directory: &str) -> String {
@@ -122,7 +139,12 @@ pub fn set_job_status(conn: &Connection, job_id: i64, status: &str) -> Result<()
     return Ok(());
 }
 
-pub fn upsert_job_file(conn: &Connection, job_id: i64, local_dir: &Path, transfer: &Transfer) -> Result<()> {
+pub fn upsert_job_file(
+    conn: &Connection,
+    job_id: i64,
+    local_dir: &Path,
+    transfer: &Transfer,
+) -> Result<()> {
     let basename = split_remote_path(&transfer.filename).1;
     let local_path = local_dir.join(basename);
     conn.execute(
@@ -151,7 +173,11 @@ pub fn upsert_job_file(conn: &Connection, job_id: i64, local_dir: &Path, transfe
 
 pub fn get_job(conn: &Connection, job_id: i64) -> Result<Job> {
     return conn
-        .query_row("SELECT * FROM jobs WHERE id = ?1", params![job_id], row_to_job)
+        .query_row(
+            "SELECT * FROM jobs WHERE id = ?1",
+            params![job_id],
+            row_to_job,
+        )
         .map_err(|e| {
             return match e {
                 rusqlite::Error::QueryReturnedNoRows => Error::JobNotFound {
@@ -237,7 +263,14 @@ pub fn derive_status_from_states(states: &[&str]) -> &'static str {
         return STATUS_FETCHED;
     }
     if succeeded == 0 {
-        return STATUS_FAILED;
+        let any_errored = states
+            .iter()
+            .any(|s| return s.contains("Errored") || s.contains("Rejected"));
+        return if any_errored {
+            STATUS_FAILED
+        } else {
+            STATUS_CANCELLED
+        };
     }
     return STATUS_PARTIAL;
 }

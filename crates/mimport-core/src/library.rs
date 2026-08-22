@@ -3,7 +3,7 @@
 use std::path::Path;
 
 use rusqlite::types::Value;
-use rusqlite::{params, params_from_iter, Connection};
+use rusqlite::{Connection, params, params_from_iter};
 use serde::Serialize;
 
 use crate::error::{Error, Result};
@@ -55,8 +55,17 @@ pub(crate) fn ensure_schema(conn: &Connection) -> Result<()> {
 }
 
 /// Upsert one imported file, keyed by `path`.
-pub fn insert_track(conn: &Connection, job_id: Option<i64>, release: &NormalizedRelease, matched: &MatchedTrack, imported: &ImportedFile) -> Result<i64> {
-    let artist = release.artist_credit.clone().unwrap_or_else(|| return "Unknown Artist".to_string());
+pub fn insert_track(
+    conn: &Connection,
+    job_id: Option<i64>,
+    release: &NormalizedRelease,
+    matched: &MatchedTrack,
+    imported: &ImportedFile,
+) -> Result<i64> {
+    let artist = release
+        .artist_credit
+        .clone()
+        .unwrap_or_else(|| return "Unknown Artist".to_string());
     let format = imported
         .dest
         .extension()
@@ -69,9 +78,9 @@ pub fn insert_track(conn: &Connection, job_id: Option<i64>, release: &Normalized
             (job_id, release_mbid, recording_id, artist, album, title, track_position, disc_position, year, path, format)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
          ON CONFLICT(path) DO UPDATE SET
-            job_id = excluded.job_id,
-            release_mbid = excluded.release_mbid,
-            recording_id = excluded.recording_id,
+            job_id = COALESCE(excluded.job_id, library_tracks.job_id),
+            release_mbid = COALESCE(excluded.release_mbid, library_tracks.release_mbid),
+            recording_id = COALESCE(excluded.recording_id, library_tracks.recording_id),
             artist = excluded.artist,
             album = excluded.album,
             title = excluded.title,
@@ -94,12 +103,20 @@ pub fn insert_track(conn: &Connection, job_id: Option<i64>, release: &Normalized
             format,
         ],
     )?;
-    return Ok(conn.query_row("SELECT id FROM library_tracks WHERE path = ?1", params![path], |row| return row.get(0))?);
+    return Ok(conn.query_row(
+        "SELECT id FROM library_tracks WHERE path = ?1",
+        params![path],
+        |row| return row.get(0),
+    )?);
 }
 
 pub fn get_track(conn: &Connection, id: i64) -> Result<LibraryTrack> {
     return conn
-        .query_row("SELECT * FROM library_tracks WHERE id = ?1", params![id], row_to_track)
+        .query_row(
+            "SELECT * FROM library_tracks WHERE id = ?1",
+            params![id],
+            row_to_track,
+        )
         .map_err(|e| {
             return match e {
                 rusqlite::Error::QueryReturnedNoRows => Error::TrackNotFound { id },
@@ -245,7 +262,9 @@ impl Clause {
     fn matches(&self, t: &LibraryTrack) -> bool {
         let hit = match self.field {
             Some(f) => match_field(t, f, &self.kind),
-            None => [&t.artist, &t.album, &t.title].iter().any(|v| return match_text(v, &self.kind)),
+            None => [&t.artist, &t.album, &t.title]
+                .iter()
+                .any(|v| return match_text(v, &self.kind)),
         };
         return hit != self.negate;
     }
@@ -272,7 +291,11 @@ impl Clause {
         } else {
             format!("({})", ors.join(" OR "))
         };
-        let frag = if self.negate { format!("NOT ({joined})") } else { joined };
+        let frag = if self.negate {
+            format!("NOT ({joined})")
+        } else {
+            joined
+        };
         return Some((frag, params));
     }
 }
@@ -433,11 +456,23 @@ fn parse_term(raw: &str) -> Result<Clause> {
         MatchKind::Substring(value.to_string())
     };
 
-    return Ok(Clause { field, negate, kind });
+    return Ok(Clause {
+        field,
+        negate,
+        kind,
+    });
 }
 
-/// Deletes each track's row and, if `delete_files`, its file (best-effort).
-pub fn remove(conn: &Connection, tracks: &[LibraryTrack], delete_files: bool) -> Result<Vec<String>> {
+/// Deletes each track's row (atomically, before touching any file) and, if
+/// `delete_files`, its file best-effort — a file that can't be removed is
+/// warned and skipped rather than aborting, since the row is already gone.
+pub fn remove(
+    conn: &Connection,
+    tracks: &[LibraryTrack],
+    delete_files: bool,
+) -> Result<Vec<String>> {
+    let ids: Vec<i64> = tracks.iter().map(|t| return t.id).collect();
+    remove_tracks(conn, &ids)?;
     let mut deleted_files = Vec::new();
     if delete_files {
         for t in tracks {
@@ -445,11 +480,9 @@ pub fn remove(conn: &Connection, tracks: &[LibraryTrack], delete_files: bool) ->
             match std::fs::remove_file(path) {
                 Ok(()) => deleted_files.push(t.path.clone()),
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                Err(e) => return Err(Error::io(path, e)),
+                Err(e) => tracing::warn!("failed to delete {}: {e}", t.path),
             }
         }
     }
-    let ids: Vec<i64> = tracks.iter().map(|t| return t.id).collect();
-    remove_tracks(conn, &ids)?;
     return Ok(deleted_files);
 }

@@ -1,8 +1,8 @@
 use std::sync::Mutex;
 use std::time::Duration;
 
-use serde::de::DeserializeOwned;
 use serde::Serialize;
+use serde::de::DeserializeOwned;
 
 use crate::config::SlskdConfig;
 use crate::error::{Error, Result};
@@ -125,7 +125,11 @@ impl SlskdClient {
         return self.call(reqwest::Method::GET, path, None::<&()>, None);
     }
 
-    pub fn get_with_timeout<T: DeserializeOwned>(&self, path: &str, timeout: Duration) -> Result<T> {
+    pub fn get_with_timeout<T: DeserializeOwned>(
+        &self,
+        path: &str,
+        timeout: Duration,
+    ) -> Result<T> {
         return self.call(reqwest::Method::GET, path, None::<&()>, Some(timeout));
     }
 

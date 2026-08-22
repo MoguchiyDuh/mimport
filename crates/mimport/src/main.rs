@@ -1,24 +1,24 @@
 mod cli;
 mod output;
 
+use std::collections::{BTreeMap, HashSet};
 use std::path::Path;
-use std::collections::BTreeMap;
 
 use clap::Parser;
+use mimport_core::Config;
 use mimport_core::coverart::CoverArtClient;
 use mimport_core::error::Error;
 use mimport_core::import;
 use mimport_core::jobs;
 use mimport_core::library;
-use mimport_core::lidarr::{queries as lidarr_q, LidarrClient};
-use mimport_core::mb::{queries as mb_q, MbClient};
+use mimport_core::lidarr::{LidarrClient, queries as lidarr_q};
+use mimport_core::mb::{MbClient, queries as mb_q};
 use mimport_core::postfix;
 use mimport_core::release::{NormalizedRelease, NormalizedReleaseGroup, NormalizedTrack};
-use mimport_core::tags;
 use mimport_core::scorer::{self, ScoreContext};
-use mimport_core::slskd::{queries as slskd_q, SlskdClient};
+use mimport_core::slskd::{SlskdClient, queries as slskd_q};
+use mimport_core::tags;
 use mimport_core::yt;
-use mimport_core::Config;
 
 use cli::{Cli, Command, LibraryCmd, LidarrCmd, MbCmd, SlskdCmd, YtCmd};
 
@@ -84,7 +84,18 @@ fn run(cli: &Cli) -> mimport_core::Result<()> {
             },
         ),
         Command::Library(cmd) => run_library(cli, &cfg, cmd),
-        Command::Cover { query, fetch } => run_cover(cli, &cfg, query, *fetch),
+        Command::Cover { query, fetch } => {
+            let mut query = query.clone();
+            let fetch = *fetch
+                || query
+                    .iter()
+                    .position(|q| return q == "--fetch")
+                    .is_some_and(|i| {
+                        query.remove(i);
+                        return true;
+                    });
+            run_cover(cli, &cfg, &query, fetch)
+        }
         Command::Yt(cmd) => run_yt(cli, &cfg, cmd),
     }
 }
@@ -95,14 +106,15 @@ fn rank_releases(
     scoring: &mimport_core::config::Scoring,
 ) -> Vec<scorer::ScoreBreakdown> {
     let canonical = scorer::canonical_track_count(releases);
-    let canonical_titles = scorer::canonical_track_titles(releases);
     let ctx = ScoreContext {
         cfg: scoring,
         group: Some(group),
         canonical_tracks: canonical,
-        canonical_titles: &canonical_titles,
     };
-    let scored = releases.iter().map(|r| return scorer::score_release(r, &ctx)).collect();
+    let scored = releases
+        .iter()
+        .map(|r| return scorer::score_release(r, &ctx))
+        .collect();
     return scorer::rank(scored);
 }
 
@@ -167,8 +179,10 @@ fn run_mb(cli: &Cli, cfg: &Config, cmd: &MbCmd) -> mimport_core::Result<()> {
             let raw_releases = mb_q::release_group_releases(&client, mbid)?;
             let group = mb_q::lookup_release_group(&client, mbid)?;
             let group = NormalizedReleaseGroup::from(&group);
-            let releases: Vec<NormalizedRelease> =
-                raw_releases.into_iter().map(NormalizedRelease::from).collect();
+            let releases: Vec<NormalizedRelease> = raw_releases
+                .into_iter()
+                .map(NormalizedRelease::from)
+                .collect();
             let ranked = rank_releases(&releases, &group, &cfg.scoring);
             output::print(&ranked, cli.json);
         }
@@ -187,16 +201,26 @@ fn run_mb(cli: &Cli, cfg: &Config, cmd: &MbCmd) -> mimport_core::Result<()> {
 
 /// Numeric id or a jobs.title match takes precedence; an existing filesystem
 /// path not matching either is operated on ad hoc, outside job tracking.
-fn resolve_job_or_path(cfg: &Config, target: &str) -> mimport_core::Result<(Option<jobs::Job>, std::path::PathBuf)> {
+fn resolve_job_or_path(
+    cfg: &Config,
+    target: &str,
+) -> mimport_core::Result<(Option<jobs::Job>, std::path::PathBuf)> {
     let as_path = std::path::Path::new(target);
     let is_numeric = target.parse::<i64>().is_ok();
     if !is_numeric && as_path.exists() {
         return Ok((None, as_path.to_path_buf()));
     }
     let db = jobs::open(&cfg.paths.database)?;
-    let job = jobs::resolve_target(&db, target)?;
-    let dir = std::path::PathBuf::from(&job.local_dir);
-    return Ok((Some(job), dir));
+    match jobs::resolve_target(&db, target) {
+        Ok(job) => {
+            let dir = std::path::PathBuf::from(&job.local_dir);
+            return Ok((Some(job), dir));
+        }
+        Err(Error::JobNotFound { .. }) if as_path.exists() => {
+            return Ok((None, as_path.to_path_buf()));
+        }
+        Err(e) => return Err(e),
+    }
 }
 
 fn run_postfix(cli: &Cli, cfg: &Config, target: &str, dry_run: bool) -> mimport_core::Result<()> {
@@ -241,7 +265,13 @@ struct ImportFlags<'a> {
     dry_run: bool,
 }
 
-fn run_import(cli: &Cli, cfg: &Config, target: &str, release_mbid: &str, flags: ImportFlags) -> mimport_core::Result<()> {
+fn run_import(
+    cli: &Cli,
+    cfg: &Config,
+    target: &str,
+    release_mbid: &str,
+    flags: ImportFlags,
+) -> mimport_core::Result<()> {
     let (job, dir) = resolve_job_or_path(cfg, target)?;
 
     let mb_client = MbClient::new(&cfg.musicbrainz)?;
@@ -264,7 +294,9 @@ fn run_import(cli: &Cli, cfg: &Config, target: &str, release_mbid: &str, flags: 
 
     let unresolved = tags::resolve(&mb_client, &mut release, &overrides);
     if !unresolved.is_empty() && !flags.allow_native {
-        return Err(Error::UnresolvedTitles(tags::format_unresolved(&unresolved)));
+        return Err(Error::UnresolvedTitles(tags::format_unresolved(
+            &unresolved,
+        )));
     }
 
     let locals = import::scan_local_tracks(&dir)?;
@@ -286,8 +318,18 @@ fn run_import(cli: &Cli, cfg: &Config, target: &str, release_mbid: &str, flags: 
         match &overrides.cover {
             Some(path) => Some(mimport_core::coverart::from_local_file(path)?),
             None if flags.cover_art => {
-                let cover_client = CoverArtClient::new(&cfg.cover_art, &cfg.musicbrainz.user_agent)?;
-                cover_client.front_cover(&release.id)?
+                let cover_client =
+                    CoverArtClient::new(&cfg.cover_art, &cfg.musicbrainz.user_agent)?;
+                match cover_client.front_cover(&release.id) {
+                    Ok(c) => c,
+                    Err(e) => {
+                        tracing::warn!(
+                            "cover art fetch failed for {}: {e}; importing without art",
+                            release.id
+                        );
+                        None
+                    }
+                }
             }
             None => None,
         }
@@ -344,10 +386,22 @@ fn run_library(cli: &Cli, cfg: &Config, cmd: &LibraryCmd) -> mimport_core::Resul
             output::print(&track, cli.json);
         }
         LibraryCmd::Remove { files, query } => {
-            let clauses = library::parse_query(query)?;
+            let mut query = query.clone();
+            let files = *files
+                || query
+                    .iter()
+                    .position(|q| return q == "--files")
+                    .is_some_and(|i| {
+                        query.remove(i);
+                        return true;
+                    });
+            let clauses = library::parse_query(&query)?;
             let tracks = library::list_tracks(&db, &clauses)?;
-            let deleted_files = library::remove(&db, &tracks, *files)?;
-            output::print(&serde_json::json!({"removed": tracks, "deleted_files": deleted_files}), cli.json);
+            let deleted_files = library::remove(&db, &tracks, files)?;
+            output::print(
+                &serde_json::json!({"removed": tracks, "deleted_files": deleted_files}),
+                cli.json,
+            );
         }
     }
     return Ok(());
@@ -360,7 +414,10 @@ fn run_cover(cli: &Cli, cfg: &Config, query: &[String], fetch: bool) -> mimport_
 
     let mut by_release: BTreeMap<Option<String>, Vec<&library::LibraryTrack>> = BTreeMap::new();
     for t in &tracks {
-        by_release.entry(t.release_mbid.clone()).or_default().push(t);
+        by_release
+            .entry(t.release_mbid.clone())
+            .or_default()
+            .push(t);
     }
 
     let client = CoverArtClient::new(&cfg.cover_art, &cfg.musicbrainz.user_agent)?;
@@ -391,16 +448,37 @@ fn run_cover(cli: &Cli, cfg: &Config, query: &[String], fetch: bool) -> mimport_
             }));
             continue;
         };
-        let cover = match client.front_cover(mbid)? {
-            Some(cover) => Some(cover),
-            None => match mb_q::release_with_tracks(&mb_client, mbid) {
+        let mut fetch_error: Option<String> = None;
+        let cover = match client.front_cover(mbid) {
+            Ok(Some(c)) => Some(c),
+            Ok(None) => match mb_q::release_with_tracks(&mb_client, mbid) {
                 Ok(release) => match release.release_group {
-                    Some(rg) => client.front_cover_release_group(&rg.id)?,
+                    Some(rg) => match client.front_cover_release_group(&rg.id) {
+                        Ok(c) => c,
+                        Err(e) => {
+                            fetch_error = Some(e.to_string());
+                            None
+                        }
+                    },
                     None => None,
                 },
                 Err(_) => None,
             },
+            Err(e) => {
+                fetch_error = Some(e.to_string());
+                None
+            }
         };
+        if let Some(err) = fetch_error {
+            results.push(serde_json::json!({
+                "release": mbid,
+                "tracks": ts.len(),
+                "embedded": 0,
+                "reason": "fetch error",
+                "failed": [{"error": err}],
+            }));
+            continue;
+        }
         let Some(cover) = cover else {
             results.push(serde_json::json!({
                 "release": mbid,
@@ -411,15 +489,21 @@ fn run_cover(cli: &Cli, cfg: &Config, query: &[String], fetch: bool) -> mimport_
             continue;
         };
         let mut embedded = 0;
+        let mut failed = Vec::new();
         for t in ts {
-            if mimport_core::coverart::embed_cover(Path::new(&t.path), &cover).is_ok() {
-                embedded += 1;
+            match mimport_core::coverart::embed_cover(Path::new(&t.path), &cover) {
+                Ok(()) => embedded += 1,
+                Err(e) => {
+                    tracing::warn!("embed failed for {}: {e}", t.path);
+                    failed.push(serde_json::json!({ "path": t.path, "error": e.to_string() }));
+                }
             }
         }
         results.push(serde_json::json!({
             "release": mbid,
             "tracks": ts.len(),
             "embedded": embedded,
+            "failed": failed,
         }));
     }
     output::print(&results, cli.json);
@@ -482,7 +566,9 @@ fn run_yt(cli: &Cli, cfg: &Config, cmd: &YtCmd) -> mimport_core::Result<()> {
             })?;
             let unresolved = tags::resolve(&mb_client, &mut norm, &overrides);
             if !unresolved.is_empty() && !*allow_native {
-                return Err(Error::UnresolvedTitles(tags::format_unresolved(&unresolved)));
+                return Err(Error::UnresolvedTitles(tags::format_unresolved(
+                    &unresolved,
+                )));
             }
 
             let backfill_track = match *disc {
@@ -490,8 +576,7 @@ fn run_yt(cli: &Cli, cfg: &Config, cmd: &YtCmd) -> mimport_core::Result<()> {
                     .tracks
                     .iter()
                     .find(|t| {
-                        return t.position == Some(position)
-                            && t.medium_position.unwrap_or(1) == d;
+                        return t.position == Some(position) && t.medium_position.unwrap_or(1) == d;
                     })
                     .cloned()
                     .ok_or_else(|| {
@@ -512,16 +597,12 @@ fn run_yt(cli: &Cli, cfg: &Config, cmd: &YtCmd) -> mimport_core::Result<()> {
                             position,
                         });
                     }
-                    candidates
-                        .into_iter()
-                        .next()
-                        .cloned()
-                        .ok_or_else(|| {
-                            return Error::YtTrackNotFound {
-                                release_mbid: mbid.clone(),
-                                position,
-                            };
-                        })?
+                    candidates.into_iter().next().cloned().ok_or_else(|| {
+                        return Error::YtTrackNotFound {
+                            release_mbid: mbid.clone(),
+                            position,
+                        };
+                    })?
                 }
             };
             (norm, Some(backfill_track))
@@ -529,7 +610,9 @@ fn run_yt(cli: &Cli, cfg: &Config, cmd: &YtCmd) -> mimport_core::Result<()> {
         None => {
             let synthetic = NormalizedRelease {
                 id: String::new(),
-                title: album.clone().unwrap_or_else(|| return "Unknown Album".to_string()),
+                title: album
+                    .clone()
+                    .unwrap_or_else(|| return "Unknown Album".to_string()),
                 status: None,
                 country: None,
                 disambiguation: None,
@@ -557,10 +640,16 @@ fn run_yt(cli: &Cli, cfg: &Config, cmd: &YtCmd) -> mimport_core::Result<()> {
         .ok_or(Error::YtTitleRequired)?;
     // In the --release path norm_release.artist_credit is already the resolved
     // (override + romanization) artist; in the synthetic path it's the raw --artist.
-    let final_artist = norm_release.artist_credit.clone().or_else(|| return artist.clone());
+    let final_artist = norm_release
+        .artist_credit
+        .clone()
+        .or_else(|| return artist.clone());
     let final_track = track.or_else(|| return backfill.as_ref().and_then(|t| return t.position));
-    let final_disc = disc.or_else(|| return backfill.as_ref().and_then(|t| return t.medium_position));
-    let recording_id = backfill.as_ref().and_then(|t| return t.recording_id.clone());
+    let final_disc =
+        disc.or_else(|| return backfill.as_ref().and_then(|t| return t.medium_position));
+    let recording_id = backfill
+        .as_ref()
+        .and_then(|t| return t.recording_id.clone());
     let title_native = backfill
         .as_ref()
         .and_then(|t| return t.title_native.clone())
@@ -569,7 +658,9 @@ fn run_yt(cli: &Cli, cfg: &Config, cmd: &YtCmd) -> mimport_core::Result<()> {
     let mut norm_release = norm_release;
     norm_release.artist_credit = final_artist;
 
-    let raw_position = backfill.as_ref().and_then(|t| return t.raw_position.clone());
+    let raw_position = backfill
+        .as_ref()
+        .and_then(|t| return t.raw_position.clone());
     let matched = vec![import::MatchedTrack {
         file: fetched.path.clone(),
         position: final_track,
@@ -651,7 +742,9 @@ fn run_yt_playlist(
 
     let unresolved = tags::resolve(&mb_client, &mut release, &overrides);
     if !unresolved.is_empty() && !flags.allow_native {
-        return Err(Error::UnresolvedTitles(tags::format_unresolved(&unresolved)));
+        return Err(Error::UnresolvedTitles(tags::format_unresolved(
+            &unresolved,
+        )));
     }
 
     // Cover art is always the YouTube thumbnail; use the first entry that has one.
@@ -666,9 +759,22 @@ fn run_yt_playlist(
     // rather than aborting the whole import.
     let mut matched: Vec<import::MatchedTrack> = Vec::new();
     let mut skipped: Vec<u32> = Vec::new();
+    let mut claimed: HashSet<u32> = HashSet::new();
     for (idx, f) in fetched.iter().enumerate() {
         let position = f.playlist_index.unwrap_or_else(|| return (idx as u32) + 1);
-        let track = match release.tracks.iter().find(|t| return t.position == Some(position)) {
+        if !claimed.insert(position) {
+            tracing::warn!(
+                "playlist entry {position} ({}) duplicates an earlier entry; skipping",
+                f.video_id
+            );
+            skipped.push(position);
+            continue;
+        }
+        let track = match release
+            .tracks
+            .iter()
+            .find(|t| return t.position == Some(position))
+        {
             Some(t) => t,
             None => {
                 tracing::warn!(
@@ -739,12 +845,16 @@ fn run_slskd(cli: &Cli, cfg: &Config, cmd: &SlskdCmd) -> mimport_core::Result<()
             title,
         } => {
             let search = slskd_q::search_status(&client, search_id)?;
-            let files = slskd_q::resolve_selector(&search, username, directory, filename.as_deref())?;
+            let files =
+                slskd_q::resolve_selector(&search, username, directory, filename.as_deref())?;
 
             let db = jobs::open(&cfg.paths.database)?;
-            let local_dir = jobs::local_dir_for(&cfg.paths.downloads, directory);
-            let job_title = title.clone().unwrap_or_else(|| return jobs::default_title(directory));
-            let job_id = jobs::create_job(&db, &job_title, search_id, username, directory, &local_dir)?;
+            let local_dir = jobs::local_dir_for(&cfg.paths.downloads, username, directory);
+            let job_title = title
+                .clone()
+                .unwrap_or_else(|| return jobs::default_title(directory));
+            let job_id =
+                jobs::create_job(&db, &job_title, search_id, username, directory, &local_dir)?;
 
             let result = slskd_q::fetch_and_wait(&client, &cfg.slskd, username, &files, |t| {
                 return jobs::upsert_job_file(&db, job_id, &local_dir, t);
@@ -759,7 +869,10 @@ fn run_slskd(cli: &Cli, cfg: &Config, cmd: &SlskdCmd) -> mimport_core::Result<()
                 }
             };
             let job = jobs::get_job(&db, job_id)?;
-            output::print(&serde_json::json!({"job": job, "transfers": transfers}), cli.json);
+            output::print(
+                &serde_json::json!({"job": job, "transfers": transfers}),
+                cli.json,
+            );
         }
         SlskdCmd::Status { target } => {
             let db = jobs::open(&cfg.paths.database)?;
@@ -779,7 +892,12 @@ fn run_slskd(cli: &Cli, cfg: &Config, cmd: &SlskdCmd) -> mimport_core::Result<()
                 cancelled_any = true;
                 slskd_q::cancel_transfer(&client, &job.username, &f.transfer_id, *remove)?;
                 let transfer = slskd_q::transfer_status(&client, &job.username, &f.transfer_id)?;
-                jobs::upsert_job_file(&db, job.id, std::path::Path::new(&job.local_dir), &transfer)?;
+                jobs::upsert_job_file(
+                    &db,
+                    job.id,
+                    std::path::Path::new(&job.local_dir),
+                    &transfer,
+                )?;
             }
             let files = jobs::get_job_files(&db, job.id)?;
             // Only overwrite job.status if something was actually cancelled here —
@@ -792,7 +910,10 @@ fn run_slskd(cli: &Cli, cfg: &Config, cmd: &SlskdCmd) -> mimport_core::Result<()
             let job = jobs::get_job(&db, job.id)?;
             output::print(&serde_json::json!({"job": job, "files": files}), cli.json);
         }
-        SlskdCmd::Browse { username, directory } => {
+        SlskdCmd::Browse {
+            username,
+            directory,
+        } => {
             let dirs = slskd_q::browse_directory(&client, username, directory)?;
             output::print(&dirs, cli.json);
         }
