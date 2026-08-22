@@ -1,5 +1,3 @@
-use std::collections::BTreeSet;
-
 use serde::Serialize;
 
 use crate::config::Scoring;
@@ -115,27 +113,10 @@ pub(crate) fn text_similarity(a: &str, b: &str) -> f64 {
     return 1.0 - (dist as f64 / max_len as f64);
 }
 
-pub fn canonical_track_titles(releases: &[NormalizedRelease]) -> BTreeSet<String> {
-    let mut counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
-    for r in releases {
-        let titles: BTreeSet<String> = r.tracks.iter().map(|t| return normalize_title(&t.title)).collect();
-        for t in titles {
-            *counts.entry(t).or_insert(0) += 1;
-        }
-    }
-    let threshold = releases.len();
-    return counts
-        .into_iter()
-        .filter(|(_, n)| return n * 2 >= threshold)
-        .map(|(t, _)| return t)
-        .collect();
-}
-
 pub struct ScoreContext<'a> {
     pub cfg: &'a Scoring,
     pub group: Option<&'a NormalizedReleaseGroup>,
     pub canonical_tracks: Option<u32>,
-    pub canonical_titles: &'a BTreeSet<String>,
 }
 
 pub fn score_release(release: &NormalizedRelease, ctx: &ScoreContext<'_>) -> ScoreBreakdown {
@@ -276,7 +257,8 @@ fn term_penalty(text: &str, cfg: &Scoring) -> f64 {
 
 fn score_bonus_tracks(release: &NormalizedRelease, cfg: &Scoring, b: &mut ScoreBreakdown) {
     let title = release.title.to_lowercase();
-    let is_edition = title.contains("deluxe") || title.contains("expanded") || title.contains("bonus");
+    let is_edition =
+        title.contains("deluxe") || title.contains("expanded") || title.contains("bonus");
     if !is_edition {
         return;
     }

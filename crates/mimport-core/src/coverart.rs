@@ -1,8 +1,8 @@
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
-use image::imageops::FilterType;
 use image::ImageFormat;
+use image::imageops::FilterType;
 use lofty::config::{ParseOptions, WriteOptions};
 use lofty::file::{AudioFile, TaggedFileExt};
 use lofty::flac::FlacFile;
@@ -62,6 +62,14 @@ pub struct CoverArtClient {
     base_url: String,
     user_agent: String,
     cache_dir: PathBuf,
+    positive_ttl: Duration,
+    negative_ttl: Duration,
+}
+
+enum Cached {
+    Positive(CoverArt),
+    Negative,
+    Miss,
 }
 
 impl CoverArtClient {
@@ -78,29 +86,62 @@ impl CoverArtClient {
             base_url: cfg.base_url.trim_end_matches('/').to_string(),
             user_agent: user_agent.to_string(),
             cache_dir,
+            positive_ttl: Duration::from_secs(cfg.cache_ttl_secs),
+            negative_ttl: Duration::from_secs(cfg.negative_ttl_secs),
         });
     }
 
-    fn cache_path(&self, release_mbid: &str) -> PathBuf {
-        return self.cache_dir.join(format!("{release_mbid}.front-500"));
+    fn cache_path(&self, key: &str) -> PathBuf {
+        return self.cache_dir.join(format!("{key}.front-500"));
     }
 
-    fn read_cache(&self, release_mbid: &str) -> Option<CoverArt> {
-        let bytes = std::fs::read(self.cache_path(release_mbid)).ok()?;
+    fn read_cache(&self, key: &str) -> Cached {
+        let path = self.cache_path(key);
+        let Ok(meta) = std::fs::metadata(&path) else {
+            return Cached::Miss;
+        };
+        let age = match meta.modified() {
+            Ok(m) => SystemTime::now().duration_since(m).unwrap_or_default(),
+            Err(_) => Duration::ZERO,
+        };
+        let bytes = match std::fs::read(&path) {
+            Ok(b) => b,
+            Err(_) => return Cached::Miss,
+        };
         if bytes.is_empty() {
-            return None;
+            return if age <= self.negative_ttl {
+                Cached::Negative
+            } else {
+                Cached::Miss
+            };
         }
-        return Some(CoverArt {
-            mime: "image/jpeg".to_string(),
-            bytes,
-        });
+        if age > self.positive_ttl {
+            return Cached::Miss;
+        }
+        match sniff_mime(&bytes) {
+            Some(mime) => Cached::Positive(CoverArt {
+                mime: mime.to_string(),
+                bytes,
+            }),
+            None => {
+                let _ = std::fs::remove_file(&path);
+                Cached::Miss
+            }
+        }
     }
 
-    fn write_cache(&self, release_mbid: &str, bytes: &[u8]) {
+    fn write_cache(&self, key: &str, bytes: &[u8]) {
         if std::fs::create_dir_all(&self.cache_dir).is_err() {
             return;
         }
-        let _ = std::fs::write(self.cache_path(release_mbid), bytes);
+        let _ = std::fs::write(self.cache_path(key), bytes);
+    }
+
+    fn write_negative(&self, key: &str) {
+        if std::fs::create_dir_all(&self.cache_dir).is_err() {
+            return;
+        }
+        let _ = std::fs::write(self.cache_path(key), b"");
     }
 
     pub fn front_cover(&self, release_mbid: &str) -> Result<Option<CoverArt>> {
@@ -115,41 +156,72 @@ impl CoverArtClient {
     }
 
     fn fetch(&self, path: &str, cache_key: &str) -> Result<Option<CoverArt>> {
-        if let Some(cached) = self.read_cache(cache_key) {
-            return Ok(Some(cached));
+        match self.read_cache(cache_key) {
+            Cached::Positive(c) => return Ok(Some(c)),
+            Cached::Negative => return Ok(None),
+            Cached::Miss => {}
         }
 
         let url = format!("{}/{}/front-500", self.base_url, path);
-        let resp = match self
+        let resp = self
             .http
             .get(&url)
             .header(reqwest::header::USER_AGENT, &self.user_agent)
             .send()
-        {
-            Ok(resp) => resp,
-            Err(e) => {
-                tracing::warn!("cover art fetch failed for {cache_key}: {e}; importing without art");
-                return Ok(None);
-            }
-        };
+            .map_err(|e| {
+                return Error::CoverFetch {
+                    url: url.clone(),
+                    reason: e.to_string(),
+                };
+            })?;
+
         let status = resp.status();
-        if !status.is_success() {
-            if status.as_u16() != 404 {
-                let body = resp.text().unwrap_or_default();
-                tracing::warn!("cover art fetch failed for {cache_key}: HTTP {status} {body}; importing without art");
-            }
+        if status.as_u16() == 404 {
+            self.write_negative(cache_key);
             return Ok(None);
         }
-        let mime = resp
-            .headers()
-            .get(reqwest::header::CONTENT_TYPE)
-            .and_then(|v| return v.to_str().ok())
-            .unwrap_or("image/jpeg")
-            .to_string();
+        if !status.is_success() {
+            let body = resp.text().unwrap_or_default();
+            return Err(Error::CoverFetch {
+                url,
+                reason: format!("HTTP {status} {body}"),
+            });
+        }
+
         let bytes = resp.bytes()?.to_vec();
-        self.write_cache(cache_key, &bytes);
-        return Ok(Some(CoverArt { mime, bytes }));
+        match sniff_mime(&bytes) {
+            Some(mime) => {
+                self.write_cache(cache_key, &bytes);
+                return Ok(Some(CoverArt {
+                    mime: mime.to_string(),
+                    bytes,
+                }));
+            }
+            None => {
+                tracing::warn!(
+                    "cover art fetch for {cache_key}: non-image body ({} bytes), not caching",
+                    bytes.len()
+                );
+                return Ok(None);
+            }
+        }
     }
+}
+
+/// Sniffs the image format from magic bytes so the embedded PICTURE block
+/// declares the correct MIME regardless of what the HTTP Content-Type header
+/// claimed (CAA has served mislabeled bodies) or what's on disk.
+fn sniff_mime(bytes: &[u8]) -> Option<&'static str> {
+    if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
+        return Some("image/jpeg");
+    }
+    if bytes.starts_with(&[0x89, 0x50, 0x4E, 0x47]) {
+        return Some("image/png");
+    }
+    if bytes.starts_with(b"GIF8") {
+        return Some("image/gif");
+    }
+    return None;
 }
 
 /// True if the file already carries at least one embedded picture.
@@ -193,13 +265,15 @@ pub fn embed_cover(path: &Path, cover: &CoverArt) -> Result<()> {
                 let _ = vc.remove_pictures();
                 let _ = vc.insert_picture(picture, None);
             }
-            f.save_to_path(path, WriteOptions::default()).map_err(save)?;
+            f.save_to_path(path, WriteOptions::default())
+                .map_err(save)?;
         }
         "opus" => {
             let mut f = OpusFile::read_from(&mut file, ParseOptions::new()).map_err(save)?;
             f.vorbis_comments_mut().remove_pictures();
             let _ = f.vorbis_comments_mut().insert_picture(picture, None);
-            f.save_to_path(path, WriteOptions::default()).map_err(save)?;
+            f.save_to_path(path, WriteOptions::default())
+                .map_err(save)?;
         }
         _ => return Ok(()),
     }

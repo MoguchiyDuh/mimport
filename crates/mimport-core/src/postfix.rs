@@ -1,4 +1,5 @@
 use std::collections::BTreeSet;
+use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
@@ -8,7 +9,7 @@ use lofty::flac::FlacFile;
 use lofty::ogg::{OpusFile, VorbisComments};
 use serde::Serialize;
 
-use crate::audio::{self, is_audio, AudioProperties};
+use crate::audio::{self, AudioProperties, is_audio, is_temp_file};
 use crate::error::{Error, Result};
 
 pub const ALLOWLIST: &[&str] = &[
@@ -82,6 +83,7 @@ pub struct Report {
     pub downsampled: Vec<PathBuf>,
     pub tags_purged: Vec<TagsPurged>,
     pub suspicious: Vec<SuspiciousFile>,
+    pub stripped_id3v2: Vec<PathBuf>,
 }
 
 #[derive(Debug, Serialize)]
@@ -98,7 +100,9 @@ pub struct SuspiciousFile {
 
 impl Report {
     pub fn changed(&self) -> bool {
-        return !self.downsampled.is_empty() || !self.tags_purged.is_empty();
+        return !self.downsampled.is_empty()
+            || !self.tags_purged.is_empty()
+            || !self.stripped_id3v2.is_empty();
     }
 }
 
@@ -123,6 +127,26 @@ pub fn run(root: &Path, opts: &Options) -> Result<Report> {
     };
 
     for path in &files {
+        if path
+            .extension()
+            .and_then(|e| return e.to_str())
+            .is_some_and(|e| return e.eq_ignore_ascii_case("flac"))
+        {
+            match strip_id3v2_prefix(path, opts.dry_run) {
+                Ok(Some(true)) => report.stripped_id3v2.push(path.clone()),
+                Ok(Some(false)) => {
+                    report.suspicious.push(SuspiciousFile {
+                        path: path.clone(),
+                        reason: "ID3v2 chunk before fLaC magic; no fLaC found to strip to"
+                            .to_string(),
+                    });
+                    continue;
+                }
+                Ok(None) => {}
+                Err(e) => tracing::warn!("ID3v2 strip failed for {}: {e}", path.display()),
+            }
+        }
+
         let props = match audio::probe(path) {
             Ok(props) => props,
             Err(e) => {
@@ -249,7 +273,7 @@ fn walk(dir: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
         let path = entry.path();
         if path.is_dir() {
             walk(&path, out)?;
-        } else if is_audio(&path) {
+        } else if is_audio(&path) && !is_temp_file(&path) {
             out.push(path);
         }
     }
@@ -258,4 +282,43 @@ fn walk(dir: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
 
 pub fn quality_ok(props: &AudioProperties, target_rate: u32, target_depth: u16) -> bool {
     return !audio::needs_downsample(props, target_rate, target_depth);
+}
+
+/// Some FLACs carry a stray ID3v2 chunk before the `fLaC` stream magic (the
+/// "Encountered an ID3v2 tag" lofty warning). Lofty refuses to rewrite such
+/// files, which silently breaks `cover --fetch` and re-import tag writes.
+/// Returns `None` if the file has no ID3v2 prefix; `Some(true)` if the prefix
+/// was stripped (or would be, on dry-run); `Some(false)` if a prefix is
+/// present but no `fLaC` magic follows within the first 2 MB.
+fn strip_id3v2_prefix(path: &Path, dry_run: bool) -> Result<Option<bool>> {
+    let mut file = std::fs::File::open(path).map_err(|e| return Error::io(path, e))?;
+    let mut head = [0u8; 3];
+    if file.read_exact(&mut head).is_err() {
+        return Ok(None);
+    }
+    if head != *b"ID3" {
+        return Ok(None);
+    }
+    file.seek(SeekFrom::Start(0))
+        .map_err(|e| return Error::io(path, e))?;
+    let mut buf = Vec::new();
+    file.take(2 * 1024 * 1024)
+        .read_to_end(&mut buf)
+        .map_err(|e| return Error::io(path, e))?;
+    let Some(pos) = buf.windows(4).position(|w| return w == b"fLaC") else {
+        return Ok(Some(false));
+    };
+    if pos == 0 || dry_run {
+        return Ok(Some(true));
+    }
+    let tmp = path.with_extension("mimport-id3strip.tmp");
+    {
+        let mut src = std::fs::File::open(path).map_err(|e| return Error::io(path, e))?;
+        src.seek(SeekFrom::Start(pos as u64))
+            .map_err(|e| return Error::io(path, e))?;
+        let mut dst = std::fs::File::create(&tmp).map_err(|e| return Error::io(&tmp, e))?;
+        std::io::copy(&mut src, &mut dst).map_err(|e| return Error::io(&tmp, e))?;
+    }
+    std::fs::rename(&tmp, path).map_err(|e| return Error::io(path, e))?;
+    return Ok(Some(true));
 }

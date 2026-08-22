@@ -6,14 +6,19 @@ use symphonia::core::io::MediaSourceStream;
 
 use crate::error::{Error, Result};
 
-pub const AUDIO_EXTENSIONS: &[&str] =
-    &["flac", "mp3", "m4a", "mp4", "ogg", "opus", "wav", "ape", "wv"];
+pub const AUDIO_EXTENSIONS: &[&str] = &[
+    "flac", "mp3", "m4a", "mp4", "ogg", "opus", "wav", "ape", "wv",
+];
 
 pub fn is_audio(path: &Path) -> bool {
     return path
         .extension()
         .and_then(|e| return e.to_str())
-        .is_some_and(|e| return AUDIO_EXTENSIONS.iter().any(|a| return e.eq_ignore_ascii_case(a)));
+        .is_some_and(|e| {
+            return AUDIO_EXTENSIONS
+                .iter()
+                .any(|a| return e.eq_ignore_ascii_case(a));
+        });
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -170,8 +175,17 @@ pub fn downsample(path: &Path, target_rate: u32, target_depth: u16) -> Result<()
 
 fn temp_sibling(path: &Path) -> PathBuf {
     let mut name = path.file_name().unwrap_or_default().to_os_string();
-    name.push(".mimport-tmp.flac");
+    name.push(format!(".mimport-tmp.{}.flac", std::process::id()));
     return path.with_file_name(name);
+}
+
+/// True for mimport's own per-process temp files so walks skip them instead of
+/// treating a leftover `.mimport-tmp.<pid>.flac` as audio to import/postfix.
+pub fn is_temp_file(path: &Path) -> bool {
+    return path
+        .file_name()
+        .and_then(|n| return n.to_str())
+        .is_some_and(|n| return n.contains(".mimport-tmp."));
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -57,7 +57,9 @@ impl DiskCache {
             .file_name()
             .and_then(|n| return n.to_str())
             .unwrap_or("entry");
-        let tmp_path = self.dir.join(format!(".{file_name}.{}.tmp", std::process::id()));
+        let tmp_path = self
+            .dir
+            .join(format!(".{file_name}.{}.tmp", std::process::id()));
         if let Err(e) = std::fs::write(&tmp_path, body) {
             let _ = std::fs::remove_file(&tmp_path);
             return Err(Error::io(&tmp_path, e));

@@ -123,8 +123,12 @@ pub enum LibraryCmd {
 
 #[derive(Subcommand)]
 pub enum LidarrCmd {
-    Artist { query: String },
-    Album { mbid: String },
+    Artist {
+        query: String,
+    },
+    Album {
+        mbid: String,
+    },
     Tracks {
         release_group_mbid: String,
         release_mbid: String,
@@ -185,9 +189,13 @@ pub enum YtCmd {
 
 #[derive(Subcommand)]
 pub enum SlskdCmd {
-    Search { query: String },
+    Search {
+        query: String,
+    },
 
-    SearchStatus { id: String },
+    SearchStatus {
+        id: String,
+    },
 
     Fetch {
         search_id: String,
@@ -200,7 +208,9 @@ pub enum SlskdCmd {
     },
 
     /// job id or jobs.title (see `fetch --title`)
-    Status { target: String },
+    Status {
+        target: String,
+    },
 
     /// job id or jobs.title (see `fetch --title`)
     Cancel {

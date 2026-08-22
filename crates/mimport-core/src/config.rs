@@ -60,6 +60,10 @@ pub struct CoverArtConfig {
     /// Disk cache for fetched front covers; defaults under the OS cache dir.
     #[serde(default)]
     pub cache_dir: Option<PathBuf>,
+    #[serde(default = "default_cover_art_cache_ttl_secs")]
+    pub cache_ttl_secs: u64,
+    #[serde(default = "default_cover_art_negative_ttl_secs")]
+    pub negative_ttl_secs: u64,
 }
 
 impl Default for CoverArtConfig {
@@ -67,8 +71,17 @@ impl Default for CoverArtConfig {
         return CoverArtConfig {
             base_url: default_cover_art_base_url(),
             cache_dir: None,
+            cache_ttl_secs: default_cover_art_cache_ttl_secs(),
+            negative_ttl_secs: default_cover_art_negative_ttl_secs(),
         };
     }
+}
+
+fn default_cover_art_cache_ttl_secs() -> u64 {
+    return 2_592_000;
+}
+fn default_cover_art_negative_ttl_secs() -> u64 {
+    return 604_800;
 }
 
 #[derive(Debug, Deserialize)]
