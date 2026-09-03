@@ -43,16 +43,30 @@ pub fn lookup_artist(client: &MbClient, mbid: &str) -> Result<Artist> {
     return client.get(&format!("/artist/{mbid}"), &[]);
 }
 
+const RELEASES_PAGE: usize = 100;
+const RELEASES_MAX: usize = 1000;
+
 pub fn release_group_releases(client: &MbClient, release_group_mbid: &str) -> Result<Vec<Release>> {
-    let resp: ReleaseBrowseResponse = client.get(
-        "/release",
-        &[
-            ("release-group", release_group_mbid),
-            ("inc", "media+labels+recordings+artist-credits"),
-            ("limit", "100"),
-        ],
-    )?;
-    return Ok(resp.releases);
+    let mut all: Vec<Release> = Vec::new();
+    let mut offset = 0usize;
+    loop {
+        let resp: ReleaseBrowseResponse = client.get(
+            "/release",
+            &[
+                ("release-group", release_group_mbid),
+                ("inc", "media+labels+recordings+artist-credits"),
+                ("limit", "100"),
+                ("offset", &offset.to_string()),
+            ],
+        )?;
+        let count = resp.releases.len();
+        all.extend(resp.releases);
+        offset += count;
+        if count < RELEASES_PAGE || offset >= RELEASES_MAX {
+            break;
+        }
+    }
+    return Ok(all);
 }
 
 pub fn lookup_release_group(client: &MbClient, release_group_mbid: &str) -> Result<ReleaseGroup> {

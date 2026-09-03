@@ -15,6 +15,11 @@ cache_dir = "/tmp/mimport-dev/cache/lidarr"
 base_url = "http://127.0.0.1:8111"
 username = "CHANGE_ME"
 password = "CHANGE_ME"
+# fetch wait window = base + per_mb * total MB + per_file * file count,
+# re-armed on any observed progress; per-call override with --wait-secs
+# fetch_timeout_base_secs     = 30
+# fetch_timeout_per_mb_secs   = 1.0
+# fetch_timeout_per_file_secs = 30
 
 [quality]
 target_samplerate = 44100
@@ -23,6 +28,8 @@ target_bitdepth = 16
 [cover_art]
 base_url = "https://coverartarchive.org"
 # cache_dir = "/tmp/mimport-dev/cache/coverart"  # defaults under the OS cache dir
+# itunes_fallback = true    # fall back to the iTunes Search API when CAA has no cover
+# itunes_country = "JP"     # iTunes storefront for the fallback
 
 [yt]
 yt_dlp_path = "yt-dlp"

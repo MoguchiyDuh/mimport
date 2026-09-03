@@ -64,6 +64,12 @@ pub struct CoverArtConfig {
     pub cache_ttl_secs: u64,
     #[serde(default = "default_cover_art_negative_ttl_secs")]
     pub negative_ttl_secs: u64,
+    /// Fall back to the iTunes Search API when the archive has no cover.
+    #[serde(default = "default_itunes_fallback")]
+    pub itunes_fallback: bool,
+    /// iTunes storefront used for the fallback lookup.
+    #[serde(default = "default_itunes_country")]
+    pub itunes_country: String,
 }
 
 impl Default for CoverArtConfig {
@@ -73,8 +79,17 @@ impl Default for CoverArtConfig {
             cache_dir: None,
             cache_ttl_secs: default_cover_art_cache_ttl_secs(),
             negative_ttl_secs: default_cover_art_negative_ttl_secs(),
+            itunes_fallback: default_itunes_fallback(),
+            itunes_country: default_itunes_country(),
         };
     }
+}
+
+fn default_itunes_fallback() -> bool {
+    return true;
+}
+fn default_itunes_country() -> String {
+    return "JP".to_string();
 }
 
 fn default_cover_art_cache_ttl_secs() -> u64 {
@@ -84,16 +99,24 @@ fn default_cover_art_negative_ttl_secs() -> u64 {
     return 604_800;
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct YtConfig {
     #[serde(default = "default_yt_dlp_path")]
     pub yt_dlp_path: String,
+    /// Netscape-format cookie jar passed to yt-dlp via --cookies
+    #[serde(default)]
+    pub cookies: Option<PathBuf>,
+    /// browser name passed to yt-dlp via --cookies-from-browser
+    #[serde(default)]
+    pub cookies_from_browser: Option<String>,
 }
 
 impl Default for YtConfig {
     fn default() -> Self {
         return YtConfig {
             yt_dlp_path: default_yt_dlp_path(),
+            cookies: None,
+            cookies_from_browser: None,
         };
     }
 }
@@ -108,6 +131,8 @@ pub struct SlskdConfig {
     pub fetch_timeout_base_secs: u64,
     #[serde(default = "default_fetch_timeout_per_mb_secs")]
     pub fetch_timeout_per_mb_secs: f64,
+    #[serde(default = "default_fetch_timeout_per_file_secs")]
+    pub fetch_timeout_per_file_secs: u64,
     #[serde(default = "default_slskd_request_timeout")]
     pub request_timeout_secs: u64,
 }
@@ -158,6 +183,9 @@ fn default_fetch_timeout_base_secs() -> u64 {
 }
 fn default_fetch_timeout_per_mb_secs() -> f64 {
     return 1.0;
+}
+fn default_fetch_timeout_per_file_secs() -> u64 {
+    return 30;
 }
 fn default_slskd_request_timeout() -> u64 {
     return 30;

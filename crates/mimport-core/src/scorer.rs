@@ -238,21 +238,44 @@ fn term_penalty(text: &str, cfg: &Scoring) -> f64 {
     let hay = text.to_lowercase();
     let mut total = 0.0;
     for term in &cfg.terms.strong {
-        if hay.contains(term.as_str()) {
+        if contains_term(&hay, term) {
             total += cfg.terms.strong_cost;
         }
     }
     for term in &cfg.terms.medium {
-        if hay.contains(term.as_str()) {
+        if contains_term(&hay, term) {
             total += cfg.terms.medium_cost;
         }
     }
     for term in &cfg.terms.weak {
-        if hay.contains(term.as_str()) {
+        if contains_term(&hay, term) {
             total += cfg.terms.weak_cost;
         }
     }
     return total;
+}
+
+/// Whole-word containment: "demo" must not match "Demon Days", "edit" must
+/// not match "edition". Terms and `hay` are both lowercase.
+fn contains_term(hay: &str, term: &str) -> bool {
+    let mut start = 0;
+    while let Some(pos) = hay[start..].find(term) {
+        let abs = start + pos;
+        let after = abs + term.len();
+        let before_ok = hay[..abs]
+            .chars()
+            .next_back()
+            .is_none_or(|c| return !c.is_alphanumeric());
+        let after_ok = hay[after..]
+            .chars()
+            .next()
+            .is_none_or(|c| return !c.is_alphanumeric());
+        if before_ok && after_ok {
+            return true;
+        }
+        start = after;
+    }
+    return false;
 }
 
 fn score_bonus_tracks(release: &NormalizedRelease, cfg: &Scoring, b: &mut ScoreBreakdown) {

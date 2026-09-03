@@ -6,6 +6,7 @@ use std::path::Path;
 
 use clap::Parser;
 use mimport_core::Config;
+use mimport_core::config::YtConfig;
 use mimport_core::coverart::CoverArtClient;
 use mimport_core::error::Error;
 use mimport_core::import;
@@ -23,7 +24,10 @@ use mimport_core::yt;
 use cli::{Cli, Command, LibraryCmd, LidarrCmd, MbCmd, SlskdCmd, YtCmd};
 
 fn main() {
-    tracing_subscriber::fmt().with_target(false).init();
+    tracing_subscriber::fmt()
+        .with_target(false)
+        .with_writer(std::io::stderr)
+        .init();
     let cli = Cli::parse();
 
     if let Err(e) = run(&cli) {
@@ -237,7 +241,9 @@ fn run_postfix(cli: &Cli, cfg: &Config, target: &str, dry_run: bool) -> mimport_
         output::print(&report, cli.json);
         return Ok(());
     };
-    let job = if dry_run {
+    // Postfixing an already-imported job's downloads must not downgrade its
+    // status; a no-op cancel guard exists for the same reason.
+    let job = if dry_run || job.status == jobs::STATUS_IMPORTED {
         job
     } else {
         let db = jobs::open(&cfg.paths.database)?;
@@ -320,7 +326,13 @@ fn run_import(
             None if flags.cover_art => {
                 let cover_client =
                     CoverArtClient::new(&cfg.cover_art, &cfg.musicbrainz.user_agent)?;
-                match cover_client.front_cover(&release.id) {
+                let result = if cover_client.itunes_fallback_enabled() {
+                    let artist = release.artist_credit.clone().unwrap_or_default();
+                    cover_client.front_cover_with_fallback(&release.id, &artist, &release.title)
+                } else {
+                    cover_client.front_cover(&release.id)
+                };
+                match result {
                     Ok(c) => c,
                     Err(e) => {
                         tracing::warn!(
@@ -397,7 +409,8 @@ fn run_library(cli: &Cli, cfg: &Config, cmd: &LibraryCmd) -> mimport_core::Resul
                     });
             let clauses = library::parse_query(&query)?;
             let tracks = library::list_tracks(&db, &clauses)?;
-            let deleted_files = library::remove(&db, &tracks, files)?;
+            let deleted_files =
+                library::remove(&db, &tracks, files, Some(cfg.paths.library.as_path()))?;
             output::print(
                 &serde_json::json!({"removed": tracks, "deleted_files": deleted_files}),
                 cli.json,
@@ -449,12 +462,14 @@ fn run_cover(cli: &Cli, cfg: &Config, query: &[String], fetch: bool) -> mimport_
             continue;
         };
         let mut fetch_error: Option<String> = None;
+        let mut source = "caa";
         let cover = match client.front_cover(mbid) {
             Ok(Some(c)) => Some(c),
             Ok(None) => match mb_q::release_with_tracks(&mb_client, mbid) {
                 Ok(release) => match release.release_group {
                     Some(rg) => match client.front_cover_release_group(&rg.id) {
-                        Ok(c) => c,
+                        Ok(Some(c)) => Some(c),
+                        Ok(None) => None,
                         Err(e) => {
                             fetch_error = Some(e.to_string());
                             None
@@ -468,6 +483,20 @@ fn run_cover(cli: &Cli, cfg: &Config, query: &[String], fetch: bool) -> mimport_
                 fetch_error = Some(e.to_string());
                 None
             }
+        };
+        let cover = match cover {
+            Some(c) => Some(c),
+            None if fetch_error.is_none() && client.itunes_fallback_enabled() => {
+                source = "itunes";
+                match client.fetch_itunes(&ts[0].artist, &ts[0].album) {
+                    Ok(c) => c,
+                    Err(e) => {
+                        fetch_error = Some(e.to_string());
+                        None
+                    }
+                }
+            }
+            None => None,
         };
         if let Some(err) = fetch_error {
             results.push(serde_json::json!({
@@ -484,7 +513,7 @@ fn run_cover(cli: &Cli, cfg: &Config, query: &[String], fetch: bool) -> mimport_
                 "release": mbid,
                 "tracks": ts.len(),
                 "embedded": 0,
-                "reason": "no cover in archive",
+                "reason": "no cover in archive or itunes",
             }));
             continue;
         };
@@ -502,6 +531,7 @@ fn run_cover(cli: &Cli, cfg: &Config, query: &[String], fetch: bool) -> mimport_
         results.push(serde_json::json!({
             "release": mbid,
             "tracks": ts.len(),
+            "source": source,
             "embedded": embedded,
             "failed": failed,
         }));
@@ -523,8 +553,16 @@ fn run_yt(cli: &Cli, cfg: &Config, cmd: &YtCmd) -> mimport_core::Result<()> {
         playlist,
         tags,
         allow_native,
+        cookies,
+        cookies_from_browser,
         dry_run,
     } = cmd;
+
+    let mut yt_cfg = cfg.yt.clone();
+    if cookies.is_some() || cookies_from_browser.is_some() {
+        yt_cfg.cookies = cookies.clone();
+        yt_cfg.cookies_from_browser = cookies_from_browser.clone();
+    }
 
     if *playlist {
         return run_yt_playlist(
@@ -536,11 +574,12 @@ fn run_yt(cli: &Cli, cfg: &Config, cmd: &YtCmd) -> mimport_core::Result<()> {
                 tags: tags.as_deref(),
                 allow_native: *allow_native,
                 dry_run: *dry_run,
+                yt: yt_cfg,
             },
         );
     }
 
-    let fetched = yt::fetch(&cfg.yt, url, &cfg.paths.staging, false)?;
+    let fetched = yt::fetch(&yt_cfg, url, &cfg.paths.staging, false)?;
     let fetched = fetched.into_iter().next().ok_or(Error::YtEmptyFetch)?;
 
     let (norm_release, backfill) = match release {
@@ -711,6 +750,7 @@ struct YtPlaylistFlags<'a> {
     tags: Option<&'a Path>,
     allow_native: bool,
     dry_run: bool,
+    yt: YtConfig,
 }
 
 fn run_yt_playlist(
@@ -720,7 +760,7 @@ fn run_yt_playlist(
     flags: YtPlaylistFlags<'_>,
 ) -> mimport_core::Result<()> {
     let release_mbid = flags.release.ok_or(Error::YtPlaylistNeedsRelease)?;
-    let fetched = yt::fetch(&cfg.yt, url, &cfg.paths.staging, true)?;
+    let fetched = yt::fetch(&flags.yt, url, &cfg.paths.staging, true)?;
 
     let mb_client = MbClient::new(&cfg.musicbrainz)?;
     let raw_release = mb_q::release_with_tracks(&mb_client, release_mbid)?;
@@ -761,7 +801,17 @@ fn run_yt_playlist(
     let mut skipped: Vec<u32> = Vec::new();
     let mut claimed: HashSet<u32> = HashSet::new();
     for (idx, f) in fetched.iter().enumerate() {
-        let position = f.playlist_index.unwrap_or_else(|| return (idx as u32) + 1);
+        let position = match f.playlist_index {
+            Some(p) => p,
+            None => {
+                tracing::warn!(
+                    "playlist entry {} has no playlist_index; assuming position {}",
+                    f.video_id,
+                    idx + 1
+                );
+                (idx as u32) + 1
+            }
+        };
         if !claimed.insert(position) {
             tracing::warn!(
                 "playlist entry {position} ({}) duplicates an earlier entry; skipping",
@@ -829,24 +879,45 @@ fn run_yt_playlist(
 fn run_slskd(cli: &Cli, cfg: &Config, cmd: &SlskdCmd) -> mimport_core::Result<()> {
     let client = SlskdClient::new(&cfg.slskd)?;
     match cmd {
-        SlskdCmd::Search { query } => {
-            let results = slskd_q::search(&client, query)?;
-            output::print(&results, cli.json);
+        SlskdCmd::Search { query, fresh } => {
+            let outcome = slskd_q::search(&client, query, *fresh)?;
+            output::print(
+                &serde_json::json!({"reused": outcome.reused, "search": outcome.search}),
+                cli.json,
+            );
+        }
+        SlskdCmd::Searches => {
+            let searches = slskd_q::list_searches(&client)?;
+            output::print(&searches, cli.json);
         }
         SlskdCmd::SearchStatus { id } => {
             let status = slskd_q::search_status(&client, id)?;
             output::print(&status, cli.json);
         }
+        SlskdCmd::SearchRemove { id } => {
+            slskd_q::search_remove(&client, id)?;
+            output::print(&serde_json::json!({"removed": id}), cli.json);
+        }
         SlskdCmd::Fetch {
             search_id,
             username,
             directory,
-            filename,
+            filenames,
             title,
+            wait_secs,
         } => {
             let search = slskd_q::search_status(&client, search_id)?;
-            let files =
-                slskd_q::resolve_selector(&search, username, directory, filename.as_deref())?;
+            let files = slskd_q::resolve_selector(&search, username, directory, filenames)?;
+            let items: Vec<slskd_q::QueueDownloadRequestItem> = files
+                .iter()
+                .map(|f| {
+                    return slskd_q::QueueDownloadRequestItem {
+                        filename: f.filename.clone(),
+                        size: f.size,
+                    };
+                })
+                .collect();
+            let window = slskd_q::batch_timeout(&cfg.slskd, &items, *wait_secs);
 
             let db = jobs::open(&cfg.paths.database)?;
             let local_dir = jobs::local_dir_for(&cfg.paths.downloads, username, directory);
@@ -856,23 +927,10 @@ fn run_slskd(cli: &Cli, cfg: &Config, cmd: &SlskdCmd) -> mimport_core::Result<()
             let job_id =
                 jobs::create_job(&db, &job_title, search_id, username, directory, &local_dir)?;
 
-            let result = slskd_q::fetch_and_wait(&client, &cfg.slskd, username, &files, |t| {
-                return jobs::upsert_job_file(&db, job_id, &local_dir, t);
-            });
-            let transfers = match result {
-                Ok(transfers) => {
-                    jobs::set_job_status(&db, job_id, jobs::derive_status(&transfers))?;
-                    transfers
-                }
-                Err(e) => {
-                    return Err(e);
-                }
-            };
+            slskd_q::fetch_into_job(&client, username, &items, window, &db, job_id, &local_dir)?;
             let job = jobs::get_job(&db, job_id)?;
-            output::print(
-                &serde_json::json!({"job": job, "transfers": transfers}),
-                cli.json,
-            );
+            let files = jobs::get_job_files(&db, job_id)?;
+            output::print(&serde_json::json!({"job": job, "files": files}), cli.json);
         }
         SlskdCmd::Status { target } => {
             let db = jobs::open(&cfg.paths.database)?;
@@ -891,13 +949,25 @@ fn run_slskd(cli: &Cli, cfg: &Config, cmd: &SlskdCmd) -> mimport_core::Result<()
                 }
                 cancelled_any = true;
                 slskd_q::cancel_transfer(&client, &job.username, &f.transfer_id, *remove)?;
-                let transfer = slskd_q::transfer_status(&client, &job.username, &f.transfer_id)?;
-                jobs::upsert_job_file(
-                    &db,
-                    job.id,
-                    std::path::Path::new(&job.local_dir),
-                    &transfer,
-                )?;
+                // With --remove slskd may have already deleted the transfer,
+                // in which case the follow-up status fetch 404s; record the
+                // cancel locally instead of failing the whole command.
+                match slskd_q::transfer_status(&client, &job.username, &f.transfer_id) {
+                    Ok(transfer) => {
+                        jobs::upsert_job_file(
+                            &db,
+                            job.id,
+                            std::path::Path::new(&job.local_dir),
+                            &transfer,
+                        )?;
+                    }
+                    Err(Error::SlskdNotFound { .. }) => {
+                        jobs::set_job_file_state(&db, job.id, &f.transfer_id, "Cancelled")?;
+                    }
+                    Err(e) => {
+                        return Err(e);
+                    }
+                }
             }
             let files = jobs::get_job_files(&db, job.id)?;
             // Only overwrite job.status if something was actually cancelled here —
@@ -909,6 +979,94 @@ fn run_slskd(cli: &Cli, cfg: &Config, cmd: &SlskdCmd) -> mimport_core::Result<()
             }
             let job = jobs::get_job(&db, job.id)?;
             output::print(&serde_json::json!({"job": job, "files": files}), cli.json);
+        }
+        SlskdCmd::Retry { target, wait_secs } => {
+            let db = jobs::open(&cfg.paths.database)?;
+            let job = jobs::resolve_target(&db, target)?;
+            let files = jobs::get_job_files(&db, job.id)?;
+            let retryable = jobs::retryable_files(&files);
+            if retryable.is_empty() {
+                output::print(
+                    &serde_json::json!({
+                        "job": job,
+                        "retried": 0,
+                        "files": files,
+                    }),
+                    cli.json,
+                );
+                return Ok(());
+            }
+
+            let dropped_ids: Vec<String> = retryable
+                .iter()
+                .map(|f| return f.transfer_id.clone())
+                .collect();
+            let items: Vec<slskd_q::QueueDownloadRequestItem> = retryable
+                .iter()
+                .map(|f| {
+                    return slskd_q::QueueDownloadRequestItem {
+                        filename: f.remote_path.clone(),
+                        size: f.size,
+                    };
+                })
+                .collect();
+
+            // Old transfers must be gone from slskd before the same files can
+            // be re-enqueued; DB rows are swapped only once that succeeded.
+            slskd_q::clear_transfers(&client, &job.username, &dropped_ids)?;
+            let enqueued = slskd_q::enqueue_downloads(&client, &job.username, &items)?;
+            if enqueued.enqueued.is_empty() {
+                return Err(Error::Slskd {
+                    what: "enqueue",
+                    status: 0,
+                    body: format!(
+                        "no transfers returned in enqueued[] (failed: {:?})",
+                        enqueued.failed
+                    ),
+                });
+            }
+            jobs::delete_job_files(&db, job.id, &dropped_ids)?;
+            jobs::set_job_status(&db, job.id, jobs::STATUS_INCOMPLETE)?;
+
+            let local_dir = std::path::PathBuf::from(&job.local_dir);
+            let window = slskd_q::batch_timeout(&cfg.slskd, &items, *wait_secs);
+            let result = slskd_q::wait_for_transfers(
+                &client,
+                &job.username,
+                enqueued.enqueued,
+                window,
+                |t| {
+                    return jobs::upsert_job_file(&db, job.id, &local_dir, t);
+                },
+            );
+            let transfers = match result {
+                Ok(transfers) => transfers,
+                Err(e) => {
+                    return Err(e);
+                }
+            };
+            jobs::set_job_status(&db, job.id, jobs::derive_status(&transfers))?;
+            let job = jobs::get_job(&db, job.id)?;
+            let files = jobs::get_job_files(&db, job.id)?;
+            output::print(&serde_json::json!({"job": job, "files": files}), cli.json);
+        }
+        SlskdCmd::Downloads => {
+            let downloads = slskd_q::list_downloads(&client)?;
+            output::print(&downloads, cli.json);
+        }
+        SlskdCmd::Remove {
+            username,
+            transfer_id,
+        } => {
+            slskd_q::remove_download(&client, username, transfer_id)?;
+            output::print(
+                &serde_json::json!({"username": username, "transfer_id": transfer_id, "removed": true}),
+                cli.json,
+            );
+        }
+        SlskdCmd::ClearCompleted => {
+            slskd_q::clear_completed_downloads(&client)?;
+            output::print(&serde_json::json!({"cleared": true}), cli.json);
         }
         SlskdCmd::Browse {
             username,

@@ -71,7 +71,9 @@ impl NormalizedRelease {
 
 impl From<MbRelease> for NormalizedRelease {
     fn from(r: MbRelease) -> Self {
-        let track_count = r.media.iter().map(|m| return m.track_count).sum();
+        let listed: u32 = r.media.iter().map(|m| return m.track_count).sum();
+        let present: u32 = r.media.iter().map(|m| return m.tracks.len() as u32).sum();
+        let track_count = listed.max(present);
         let formats = r
             .media
             .iter()
@@ -95,31 +97,34 @@ impl From<MbRelease> for NormalizedRelease {
             })
             .collect();
         let release_group_id = r.release_group.as_ref().map(|g| return g.id.clone());
-        let tracks = r
-            .media
-            .into_iter()
-            .flat_map(|m| {
-                let format = m.format.clone();
-                let position = m.position;
-                return m
-                    .tracks
-                    .into_iter()
-                    .map(move |t| return (format.clone(), position, t))
-                    .collect::<Vec<_>>();
-            })
-            .map(|(medium_format, medium_position, t)| {
-                return NormalizedTrack {
-                    position: t.number.parse().ok(),
+
+        let mut tracks = Vec::new();
+        for m in r.media {
+            let format = m.format.clone();
+            let medium_position = m.position;
+            for (idx, t) in m.tracks.into_iter().enumerate() {
+                // MB track numbers are arbitrary strings: vinyl releases use
+                // side-qualified numbers ("A1", "D4") and some mediums use
+                // "1-01" forms, none of which parse as positions. Fall back to
+                // the track's 1-based ordinal within its medium so position is
+                // always numeric; the raw number stays on raw_position.
+                let position = t
+                    .number
+                    .parse()
+                    .ok()
+                    .or_else(|| return Some((idx as u32) + 1));
+                tracks.push(NormalizedTrack {
+                    position,
                     title: t.title,
                     length_ms: t.length.or(t.recording.length),
                     recording_id: Some(t.recording.id),
-                    medium_format,
+                    medium_format: format.clone(),
                     medium_position,
                     raw_position: Some(t.number),
                     title_native: None,
-                };
-            })
-            .collect();
+                });
+            }
+        }
 
         return NormalizedRelease {
             id: r.id,
@@ -153,26 +158,34 @@ impl From<LidarrRelease> for NormalizedRelease {
         let label = r.label.first().cloned();
         let date = r.release_date.clone();
         let media = r.media.clone();
-        let tracks = r
-            .tracks
-            .into_iter()
-            .map(|t| {
-                let medium_format = t
-                    .medium_number
-                    .and_then(|n| return media.iter().find(|m| return m.position == Some(n)))
-                    .and_then(|m| return m.format.clone());
-                return NormalizedTrack {
-                    position: t.track_number.and_then(|n| return n.parse().ok()),
-                    title: t.track_name,
-                    length_ms: t.duration_ms,
-                    recording_id: t.recording_id,
-                    medium_format,
-                    medium_position: t.medium_number,
-                    raw_position: None,
-                    title_native: None,
-                };
-            })
-            .collect();
+        let mut tracks: Vec<NormalizedTrack> = Vec::new();
+        let mut ordinals: std::collections::BTreeMap<u32, u32> = std::collections::BTreeMap::new();
+        for t in r.tracks {
+            let medium_number = t.medium_number.unwrap_or(1);
+            let ordinal = ordinals.entry(medium_number).or_insert(0);
+            *ordinal += 1;
+            let medium_format = media
+                .iter()
+                .find(|m| return m.position == Some(medium_number))
+                .and_then(|m| return m.format.clone());
+            // Same non-numeric-number fallback as the MB path: proxy track
+            // numbers are strings and aren't guaranteed to parse.
+            let position = t
+                .track_number
+                .as_deref()
+                .and_then(|n| return n.parse().ok())
+                .or(Some(*ordinal));
+            tracks.push(NormalizedTrack {
+                position,
+                title: t.track_name,
+                length_ms: t.duration_ms,
+                recording_id: t.recording_id,
+                medium_format,
+                medium_position: t.medium_number,
+                raw_position: None,
+                title_native: None,
+            });
+        }
 
         return NormalizedRelease {
             id: r.id,

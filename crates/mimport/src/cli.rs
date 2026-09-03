@@ -62,7 +62,8 @@ pub enum Command {
         /// fetch front cover from the Cover Art Archive (network); off by default
         #[arg(long, conflicts_with = "cover")]
         cover_art: bool,
-        /// "<position>=<title>" manual track title override; repeatable
+        /// "[<disc>:]<position>=<title>" manual track title override; the disc
+        /// qualifier is needed when positions repeat across discs; repeatable
         #[arg(long = "track-title")]
         track_title: Vec<String>,
         /// keep native (CJK/etc) script for any field with no romanization alias or manual override,
@@ -172,7 +173,10 @@ pub enum YtCmd {
         #[arg(long)]
         release: Option<String>,
         /// fetch the whole playlist/album instead of a single video
-        #[arg(long)]
+        #[arg(
+            long,
+            conflicts_with_all = ["title", "artist", "album", "track", "disc", "year"]
+        )]
         playlist: bool,
         /// JSON manual tag overrides (same schema as `import --tags`); applied
         /// against the --release metadata, so it needs --release to be useful
@@ -182,6 +186,14 @@ pub enum YtCmd {
         /// or manual override, instead of blocking; needs --release
         #[arg(long, requires = "release")]
         allow_native: bool,
+        /// Netscape-format cookie jar passed to yt-dlp --cookies; overrides
+        /// [yt].cookies from config
+        #[arg(long)]
+        cookies: Option<PathBuf>,
+        /// browser name passed to yt-dlp --cookies-from-browser (e.g. firefox);
+        /// overrides [yt].cookies_from_browser from config
+        #[arg(long)]
+        cookies_from_browser: Option<String>,
         #[arg(long)]
         dry_run: bool,
     },
@@ -189,35 +201,74 @@ pub enum YtCmd {
 
 #[derive(Subcommand)]
 pub enum SlskdCmd {
+    /// Search Soulseek. Reuses the latest completed search with the same
+    /// query text that returned files; `--fresh` always runs a new one.
     Search {
         query: String,
+        #[arg(long)]
+        fresh: bool,
     },
 
-    SearchStatus {
-        id: String,
-    },
+    /// List all searches (no responses).
+    Searches,
 
+    /// Detailed status of one search, including responses.
+    SearchStatus { id: String },
+
+    /// Delete a search and its responses.
+    SearchRemove { id: String },
+
+    /// Enqueue files from a search response for download and wait for them
+    /// (polling progress into the job). Without filenames, the whole
+    /// directory is fetched. The wait window (seconds of tolerated
+    /// inactivity, re-armed on progress) is computed from file count and
+    /// size; `--wait-secs` overrides it.
     Fetch {
         search_id: String,
         username: String,
         directory: String,
-        filename: Option<String>,
+        /// basenames to fetch from `directory`; omit for the whole directory
+        filenames: Vec<String>,
         /// jobs.title for this job; defaults to the last path component of `directory`
         #[arg(long)]
         title: Option<String>,
+        #[arg(long)]
+        wait_secs: Option<u64>,
     },
 
-    /// job id or jobs.title (see `fetch --title`)
-    Status {
-        target: String,
-    },
+    /// job id or jobs.title
+    Status { target: String },
 
-    /// job id or jobs.title (see `fetch --title`)
+    /// Cancel a job's pending transfers on slskd; with `--remove`, also
+    /// remove them from slskd's transfer list. job id or jobs.title.
     Cancel {
         target: String,
         #[arg(long)]
         remove: bool,
     },
+
+    /// Re-enqueue a job's not-succeeded files (their old transfers are
+    /// cancelled, removed, and their rows replaced), then wait like `fetch`.
+    /// job id or jobs.title.
+    Retry {
+        target: String,
+        #[arg(long)]
+        wait_secs: Option<u64>,
+    },
+
+    /// List slskd's tracked downloads, grouped by peer and directory.
+    Downloads,
+
+    /// Cancel (if pending) and remove one transfer entry on slskd; works on
+    /// downloads mimport isn't tracking as a job.
+    Remove {
+        username: String,
+        transfer_id: String,
+    },
+
+    /// Remove every completed (succeeded/errored/cancelled) tracked download
+    /// from slskd's transfer list.
+    ClearCompleted,
 
     Browse {
         username: String,
