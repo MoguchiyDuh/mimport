@@ -3,8 +3,9 @@
 use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 
-use lofty::config::WriteOptions;
+use lofty::config::{ParseOptions, WriteOptions};
 use lofty::file::{AudioFile, TaggedFileExt};
+use lofty::flac::FlacFile;
 use lofty::ogg::{OggPictureStorage, VorbisComments};
 use lofty::picture::{MimeType, Picture, PictureType};
 use lofty::probe::read_from_path;
@@ -621,6 +622,10 @@ fn write_tags(
     tag.set_album(release.title.clone());
     if let Some(artist) = &release.artist_credit {
         tag.set_artist(artist.clone());
+        // Keep grouping fields in sync with the resolved artist for the same
+        // reason fill_vorbis overwrites ALBUMARTIST/ARTISTS.
+        let _ = tag.insert_text(ItemKey::AlbumArtist, artist.clone());
+        let _ = tag.insert_text(ItemKey::TrackArtists, artist.clone());
     }
     if let Some(pos) = m.position {
         tag.set_track(pos);
@@ -699,12 +704,77 @@ fn write_vorbis_tags(
     release: &NormalizedRelease,
     cover_art: Option<&CoverArt>,
 ) -> Result<()> {
-    let mut vc = VorbisComments::new();
+    let ext = path
+        .extension()
+        .and_then(|e| return e.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
 
+    // FLAC: manage the file directly. Replacing the VorbisComments alone
+    // leaves the file-level PICTURE blocks intact, so a source rip's existing
+    // cover would survive alongside the new one (duplicate embedded art).
+    if ext == "flac" {
+        let mut file = std::fs::File::open(path).map_err(|e| return Error::io(path, e))?;
+        let mut f = FlacFile::read_from(&mut file, ParseOptions::new()).map_err(|e| {
+            return Error::Probe {
+                path: path.to_path_buf(),
+                reason: e.to_string(),
+            };
+        })?;
+        f.remove_pictures();
+        {
+            let vc = f
+                .vorbis_comments_mut()
+                .expect("flac carries vorbis comments");
+            fill_vorbis(vc, m, release);
+        }
+        if let Some(ca) = cover_art {
+            let _ = f.insert_picture(make_picture(ca), None);
+        }
+        f.save_to_path(path, WriteOptions::default()).map_err(|e| {
+            return Error::Probe {
+                path: path.to_path_buf(),
+                reason: e.to_string(),
+            };
+        })?;
+        return Ok(());
+    }
+
+    // Opus: pictures live inside the comments, so a fresh tag drops old ones.
+    let mut vc = VorbisComments::new();
+    fill_vorbis(&mut vc, m, release);
+    if let Some(ca) = cover_art {
+        let _ = vc.insert_picture(make_picture(ca), None);
+    }
+    vc.save_to_path(path, WriteOptions::default())
+        .map_err(|e| {
+            return Error::Probe {
+                path: path.to_path_buf(),
+                reason: e.to_string(),
+            };
+        })?;
+    return Ok(());
+}
+
+fn make_picture(ca: &CoverArt) -> Picture {
+    return Picture::unchecked(ca.bytes.clone())
+        .pic_type(PictureType::CoverFront)
+        .mime_type(MimeType::from_str(&ca.mime))
+        .build();
+}
+
+fn fill_vorbis(vc: &mut VorbisComments, m: &MatchedTrack, release: &NormalizedRelease) {
     vc.set_title(m.title.clone());
     vc.set_album(release.title.clone());
     if let Some(artist) = &release.artist_credit {
         vc.set_artist(artist.clone());
+        // Source rips often carry stale artist-grouping fields in the native
+        // script (ALBUMARTIST, the space-variant "ALBUM ARTIST", ARTISTS);
+        // overwrite every spelling so players don't surface CJK the override
+        // just removed from ARTIST.
+        vc.insert("ALBUMARTIST".to_string(), artist.clone());
+        vc.insert("ALBUM ARTIST".to_string(), artist.clone());
+        vc.insert("ARTISTS".to_string(), artist.clone());
     }
     if let Some(pos) = m.position {
         vc.set_track(pos);
@@ -739,29 +809,12 @@ fn write_vorbis_tags(
         vc.insert("ORIGINALALBUMTITLE".to_string(), native.clone());
     }
     if let Some(native) = &m.title_native {
-        vc.insert("COMMENT".to_string(), format!("Original title: {native}"));
+        vc.insert("ORIGINALTITLE".to_string(), native.clone());
     }
     // release.id may be a non-mbid sentinel (yt fetch with no --release backfill)
     if looks_like_mbid(&release.id) {
         vc.insert("MUSICBRAINZ_ALBUMID".to_string(), release.id.clone());
     }
-
-    if let Some(ca) = cover_art {
-        let picture = Picture::unchecked(ca.bytes.clone())
-            .pic_type(PictureType::CoverFront)
-            .mime_type(MimeType::from_str(&ca.mime))
-            .build();
-        let _ = vc.insert_picture(picture, None);
-    }
-
-    vc.save_to_path(path, WriteOptions::default())
-        .map_err(|e| {
-            return Error::Probe {
-                path: path.to_path_buf(),
-                reason: e.to_string(),
-            };
-        })?;
-    return Ok(());
 }
 
 fn looks_like_mbid(s: &str) -> bool {

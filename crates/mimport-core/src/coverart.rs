@@ -18,24 +18,17 @@ use crate::error::{Error, Result};
 /// covers embed at the same size as ones fetched from CAA.
 const MAX_COVER_EDGE: u32 = 500;
 
+const ITUNES_BASE_URL: &str = "https://itunes.apple.com";
+
 pub struct CoverArt {
     pub mime: String,
     pub bytes: Vec<u8>,
 }
 
-/// Loads a local image file, downscales it to `MAX_COVER_EDGE` on the long
-/// edge if larger (preserving aspect ratio, no cropping), and re-encodes as
-/// JPEG so embedded art stays small and format-consistent regardless of what
-/// the source file was.
-pub fn from_local_file(path: &Path) -> Result<CoverArt> {
-    let bytes = std::fs::read(path).map_err(|e| return Error::io(path, e))?;
-    let img = image::load_from_memory(&bytes).map_err(|e| {
-        return Error::CoverPreprocess {
-            path: path.to_path_buf(),
-            reason: e.to_string(),
-        };
-    })?;
-
+/// Downscales to `MAX_COVER_EDGE` on the long edge if larger (preserving
+/// aspect ratio, no cropping) and re-encodes as JPEG so embedded art stays
+/// small and format-consistent regardless of what the source file was.
+fn finish_cover(img: image::DynamicImage) -> Result<CoverArt> {
     let resized = if img.width().max(img.height()) > MAX_COVER_EDGE {
         img.resize(MAX_COVER_EDGE, MAX_COVER_EDGE, FilterType::Lanczos3)
     } else {
@@ -47,7 +40,7 @@ pub fn from_local_file(path: &Path) -> Result<CoverArt> {
         .write_to(&mut std::io::Cursor::new(&mut out), ImageFormat::Jpeg)
         .map_err(|e| {
             return Error::CoverPreprocess {
-                path: path.to_path_buf(),
+                path: PathBuf::from("<memory>"),
                 reason: e.to_string(),
             };
         })?;
@@ -57,6 +50,30 @@ pub fn from_local_file(path: &Path) -> Result<CoverArt> {
     });
 }
 
+/// Loads a local image file and normalizes it via [`finish_cover`].
+pub fn from_local_file(path: &Path) -> Result<CoverArt> {
+    let bytes = std::fs::read(path).map_err(|e| return Error::io(path, e))?;
+    let img = image::load_from_memory(&bytes).map_err(|e| {
+        return Error::CoverPreprocess {
+            path: path.to_path_buf(),
+            reason: e.to_string(),
+        };
+    })?;
+    return finish_cover(img);
+}
+
+fn norm_title(s: &str) -> String {
+    return s
+        .chars()
+        .filter_map(|c| {
+            if c.is_ascii_alphanumeric() {
+                return Some(c.to_ascii_lowercase());
+            }
+            return None;
+        })
+        .collect();
+}
+
 pub struct CoverArtClient {
     http: reqwest::blocking::Client,
     base_url: String,
@@ -64,6 +81,8 @@ pub struct CoverArtClient {
     cache_dir: PathBuf,
     positive_ttl: Duration,
     negative_ttl: Duration,
+    itunes_fallback: bool,
+    itunes_country: String,
 }
 
 enum Cached {
@@ -88,6 +107,8 @@ impl CoverArtClient {
             cache_dir,
             positive_ttl: Duration::from_secs(cfg.cache_ttl_secs),
             negative_ttl: Duration::from_secs(cfg.negative_ttl_secs),
+            itunes_fallback: cfg.itunes_fallback,
+            itunes_country: cfg.itunes_country.clone(),
         });
     }
 
@@ -145,17 +166,161 @@ impl CoverArtClient {
     }
 
     pub fn front_cover(&self, release_mbid: &str) -> Result<Option<CoverArt>> {
-        return self.fetch(&format!("release/{release_mbid}"), release_mbid);
+        let cover = self.fetch_caa(&format!("release/{release_mbid}"), release_mbid)?;
+        if cover.is_none() {
+            self.write_negative(release_mbid);
+        }
+        return Ok(cover);
+    }
+
+    /// Release front cover with an iTunes Search API fallback for releases the
+    /// archive has no art for. The fallback result is cached under a distinct
+    /// key so stale CAA-only negatives from earlier runs don't mask it.
+    pub fn front_cover_with_fallback(
+        &self,
+        release_mbid: &str,
+        artist: &str,
+        album: &str,
+    ) -> Result<Option<CoverArt>> {
+        let key = format!("{release_mbid}.fb");
+        match self.read_cache(&key) {
+            Cached::Positive(c) => return Ok(Some(c)),
+            Cached::Negative => return Ok(None),
+            Cached::Miss => {}
+        }
+
+        match self.fetch_caa(&format!("release/{release_mbid}"), release_mbid) {
+            Ok(Some(c)) => return Ok(Some(c)),
+            Ok(None) => {}
+            Err(e) => {
+                tracing::warn!("CAA fetch failed for {release_mbid}: {e}; trying iTunes");
+            }
+        }
+
+        match self.fetch_itunes(artist, album)? {
+            Some(c) => {
+                self.write_cache(&key, &c.bytes);
+                return Ok(Some(c));
+            }
+            None => {
+                self.write_negative(&key);
+                return Ok(None);
+            }
+        }
+    }
+
+    pub fn itunes_fallback_enabled(&self) -> bool {
+        return self.itunes_fallback;
+    }
+
+    /// Looks up an album cover via the iTunes Search API (relevance-ranked;
+    /// the first result whose normalized collection name matches the album
+    /// wins, otherwise the first result). Not cached; callers decide.
+    pub fn fetch_itunes(&self, artist: &str, album: &str) -> Result<Option<CoverArt>> {
+        if artist.is_empty() || album.is_empty() {
+            return Ok(None);
+        }
+
+        let search: serde_json::Value = self
+            .http
+            .get(format!("{ITUNES_BASE_URL}/search"))
+            .header(reqwest::header::USER_AGENT, &self.user_agent)
+            .query(&[
+                ("term", format!("{artist} {album}")),
+                ("entity", "album".to_string()),
+                ("country", self.itunes_country.clone()),
+                ("limit", "5".to_string()),
+            ])
+            .send()
+            .map_err(|e| {
+                return Error::CoverFetch {
+                    url: format!("{ITUNES_BASE_URL}/search?term={artist}+{album}"),
+                    reason: e.to_string(),
+                };
+            })?
+            .json()
+            .map_err(|e| {
+                return Error::CoverFetch {
+                    url: format!("{ITUNES_BASE_URL}/search?term={artist}+{album}"),
+                    reason: e.to_string(),
+                };
+            })?;
+
+        let results = search
+            .get("results")
+            .and_then(|r| return r.as_array())
+            .cloned()
+            .unwrap_or_default();
+        let album_norm = norm_title(album);
+        let mut art_url: Option<String> = None;
+        for res in &results {
+            let name = res
+                .get("collectionName")
+                .and_then(|v| return v.as_str())
+                .unwrap_or_default();
+            let norm = norm_title(name);
+            if norm.contains(&album_norm) || album_norm.contains(&norm) {
+                art_url = res
+                    .get("artworkUrl100")
+                    .and_then(|v| return v.as_str())
+                    .map(|v| return v.to_string());
+                break;
+            }
+        }
+        if art_url.is_none() {
+            art_url = results
+                .first()
+                .and_then(|r| return r.get("artworkUrl100"))
+                .and_then(|v| return v.as_str())
+                .map(|v| return v.to_string());
+        }
+        let Some(art_url) = art_url else {
+            return Ok(None);
+        };
+        // artworkUrl100 is a 100x100 thumbnail; requesting a larger square
+        // from the same CDN path yields up to the original resolution.
+        let big = art_url.replace("100x100bb", "1000x1000bb");
+
+        let resp = self
+            .http
+            .get(&big)
+            .header(reqwest::header::USER_AGENT, &self.user_agent)
+            .send()
+            .map_err(|e| {
+                return Error::CoverFetch {
+                    url: big.clone(),
+                    reason: e.to_string(),
+                };
+            })?;
+        if !resp.status().is_success() {
+            tracing::warn!(
+                "itunes artwork fetch failed ({big}): HTTP {}",
+                resp.status()
+            );
+            return Ok(None);
+        }
+        let bytes = resp.bytes()?.to_vec();
+        let img = match image::load_from_memory(&bytes) {
+            Ok(img) => img,
+            Err(e) => {
+                tracing::warn!("itunes artwork not an image ({big}): {e}");
+                return Ok(None);
+            }
+        };
+        tracing::info!("cover art from iTunes fallback: {big}");
+        return finish_cover(img).map(|c| return Some(c));
     }
 
     pub fn front_cover_release_group(&self, release_group_mbid: &str) -> Result<Option<CoverArt>> {
-        return self.fetch(
-            &format!("release-group/{release_group_mbid}"),
-            &format!("rg-{release_group_mbid}"),
-        );
+        let key = format!("rg-{release_group_mbid}");
+        let cover = self.fetch_caa(&format!("release-group/{release_group_mbid}"), &key)?;
+        if cover.is_none() {
+            self.write_negative(&key);
+        }
+        return Ok(cover);
     }
 
-    fn fetch(&self, path: &str, cache_key: &str) -> Result<Option<CoverArt>> {
+    fn fetch_caa(&self, path: &str, cache_key: &str) -> Result<Option<CoverArt>> {
         match self.read_cache(cache_key) {
             Cached::Positive(c) => return Ok(Some(c)),
             Cached::Negative => return Ok(None),
@@ -177,7 +342,6 @@ impl CoverArtClient {
 
         let status = resp.status();
         if status.as_u16() == 404 {
-            self.write_negative(cache_key);
             return Ok(None);
         }
         if !status.is_success() {
@@ -259,15 +423,21 @@ pub fn embed_cover(path: &Path, cover: &CoverArt) -> Result<()> {
     };
 
     match ext.as_str() {
+        // FLAC: pictures are file-level PICTURE blocks; clear them all so a
+        // source rip's art doesn't survive next to the new one.
         "flac" => {
             let mut f = FlacFile::read_from(&mut file, ParseOptions::new()).map_err(save)?;
-            if let Some(vc) = f.vorbis_comments_mut() {
-                let _ = vc.remove_pictures();
-                let _ = vc.insert_picture(picture, None);
-            }
+            f.remove_pictures();
+            f.insert_picture(picture, None).map_err(|e| {
+                return Error::Probe {
+                    path: path.to_path_buf(),
+                    reason: e.to_string(),
+                };
+            })?;
             f.save_to_path(path, WriteOptions::default())
                 .map_err(save)?;
         }
+        // Opus: pictures live inside the VorbisComments.
         "opus" => {
             let mut f = OpusFile::read_from(&mut file, ParseOptions::new()).map_err(save)?;
             f.vorbis_comments_mut().remove_pictures();

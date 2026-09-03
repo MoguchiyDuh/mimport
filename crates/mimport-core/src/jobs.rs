@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, OptionalExtension, params, params_from_iter};
 use serde::Serialize;
 
 use crate::error::{Error, Result};
@@ -196,6 +196,43 @@ pub fn get_job_files(conn: &Connection, job_id: i64) -> Result<Vec<JobFile>> {
     return Ok(rows);
 }
 
+/// Deletes specific job_files rows (used when a retried transfer's old row is
+/// superseded by a new transfer id).
+pub fn delete_job_files(conn: &Connection, job_id: i64, transfer_ids: &[String]) -> Result<()> {
+    if transfer_ids.is_empty() {
+        return Ok(());
+    }
+    let placeholders = transfer_ids
+        .iter()
+        .map(|_| return "?")
+        .collect::<Vec<_>>()
+        .join(",");
+    let mut bind: Vec<rusqlite::types::Value> = vec![rusqlite::types::Value::Integer(job_id)];
+    bind.extend(transfer_ids.iter().map(|t| {
+        return rusqlite::types::Value::Text(t.clone());
+    }));
+    conn.execute(
+        &format!("DELETE FROM job_files WHERE job_id = ? AND transfer_id IN ({placeholders})"),
+        params_from_iter(bind),
+    )?;
+    return Ok(());
+}
+
+/// Overwrites one job_file's state (used when slskd has already removed the
+/// transfer and can no longer report it, e.g. after `cancel --remove`).
+pub fn set_job_file_state(
+    conn: &Connection,
+    job_id: i64,
+    transfer_id: &str,
+    state: &str,
+) -> Result<()> {
+    conn.execute(
+        "UPDATE job_files SET state = ?1 WHERE job_id = ?2 AND transfer_id = ?3",
+        params![state, job_id, transfer_id],
+    )?;
+    return Ok(());
+}
+
 /// Numeric string = job id, falling back to an exact `jobs.title` match;
 /// otherwise exact `jobs.title` match, most-recent wins.
 pub fn resolve_target(conn: &Connection, target: &str) -> Result<Job> {
@@ -277,4 +314,13 @@ pub fn derive_status_from_states(states: &[&str]) -> &'static str {
 
 fn is_succeeded(state: &str) -> bool {
     return state.starts_with("Completed") && state.contains("Succeeded");
+}
+
+/// Files that a `retry` should re-enqueue: anything not successfully
+/// completed (stuck, queued, cancelled, errored, rejected).
+pub fn retryable_files(files: &[JobFile]) -> Vec<&JobFile> {
+    return files
+        .iter()
+        .filter(|f| return !is_succeeded(&f.state))
+        .collect();
 }

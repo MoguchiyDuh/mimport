@@ -466,10 +466,13 @@ fn parse_term(raw: &str) -> Result<Clause> {
 /// Deletes each track's row (atomically, before touching any file) and, if
 /// `delete_files`, its file best-effort — a file that can't be removed is
 /// warned and skipped rather than aborting, since the row is already gone.
+/// Successfully deleted files' now-empty parent directories are pruned up to
+/// (and excluding) `library_root` when given.
 pub fn remove(
     conn: &Connection,
     tracks: &[LibraryTrack],
     delete_files: bool,
+    library_root: Option<&Path>,
 ) -> Result<Vec<String>> {
     let ids: Vec<i64> = tracks.iter().map(|t| return t.id).collect();
     remove_tracks(conn, &ids)?;
@@ -478,11 +481,31 @@ pub fn remove(
         for t in tracks {
             let path = Path::new(&t.path);
             match std::fs::remove_file(path) {
-                Ok(()) => deleted_files.push(t.path.clone()),
+                Ok(()) => {
+                    deleted_files.push(t.path.clone());
+                    if let Some(parent) = path.parent() {
+                        prune_empty_dirs(parent, library_root);
+                    }
+                }
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
                 Err(e) => tracing::warn!("failed to delete {}: {e}", t.path),
             }
         }
     }
     return Ok(deleted_files);
+}
+
+fn prune_empty_dirs(mut dir: &Path, stop: Option<&Path>) {
+    loop {
+        if stop == Some(dir) {
+            return;
+        }
+        if std::fs::remove_dir(dir).is_err() {
+            return;
+        }
+        match dir.parent() {
+            Some(p) => dir = p,
+            None => return,
+        }
+    }
 }

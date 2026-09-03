@@ -10,12 +10,28 @@ pub const AUDIO_EXTENSIONS: &[&str] = &[
     "flac", "mp3", "m4a", "mp4", "ogg", "opus", "wav", "ape", "wv",
 ];
 
+/// Formats whose audio is inherently lossy. Downsampling these means a
+/// lossy-to-lossless transcode that destroys quality and mislabels the
+/// container, so they are never resampled.
+pub const LOSSY_EXTENSIONS: &[&str] = &["mp3", "m4a", "mp4", "ogg", "opus", "aac", "wma"];
+
 pub fn is_audio(path: &Path) -> bool {
     return path
         .extension()
         .and_then(|e| return e.to_str())
         .is_some_and(|e| {
             return AUDIO_EXTENSIONS
+                .iter()
+                .any(|a| return e.eq_ignore_ascii_case(a));
+        });
+}
+
+pub fn is_lossy(path: &Path) -> bool {
+    return path
+        .extension()
+        .and_then(|e| return e.to_str())
+        .is_some_and(|e| {
+            return LOSSY_EXTENSIONS
                 .iter()
                 .any(|a| return e.eq_ignore_ascii_case(a));
         });
@@ -119,6 +135,13 @@ pub fn needs_downsample(props: &AudioProperties, target_rate: u32, target_depth:
 }
 
 pub fn downsample(path: &Path, target_rate: u32, target_depth: u16) -> Result<()> {
+    if is_lossy(path) {
+        return Err(Error::ConfigInvalid(format!(
+            "refusing to transcode lossy file {}: downsampling applies to lossless only",
+            path.display()
+        )));
+    }
+
     let sample_fmt = match target_depth {
         16 => "s16",
         24 => "s32",

@@ -30,6 +30,7 @@ pub const ALLOWLIST: &[&str] = &[
     "DATE",
     "ORIGINALDATE",
     "ORIGINALYEAR",
+    "ORIGINALTITLE",
     "GENRE",
     "MEDIA",
     "LABEL",
@@ -81,6 +82,11 @@ fn normalized_allowlist() -> &'static BTreeSet<String> {
 pub struct Report {
     pub files_scanned: usize,
     pub downsampled: Vec<PathBuf>,
+    /// Lossy-container files (mp3/m4a/opus/...) present in the scan; they are
+    /// never resampled or transcode-flagged — resampling lossy audio means a
+    /// destructive lossy-to-lossless transcode, and "suspiciously low
+    /// bitrate" is their normal state.
+    pub skipped_lossy: Vec<PathBuf>,
     pub tags_purged: Vec<TagsPurged>,
     pub suspicious: Vec<SuspiciousFile>,
     pub stripped_id3v2: Vec<PathBuf>,
@@ -127,6 +133,8 @@ pub fn run(root: &Path, opts: &Options) -> Result<Report> {
     };
 
     for path in &files {
+        let lossy = audio::is_lossy(path);
+
         if path
             .extension()
             .and_then(|e| return e.to_str())
@@ -155,17 +163,21 @@ pub fn run(root: &Path, opts: &Options) -> Result<Report> {
             }
         };
 
-        if let Some(s) = audio::suspect_lossy(&props) {
-            report.suspicious.push(SuspiciousFile {
-                path: path.clone(),
-                reason: format!("{s:?}"),
-            });
-        }
+        if lossy {
+            report.skipped_lossy.push(path.clone());
+        } else {
+            if let Some(s) = audio::suspect_lossy(&props) {
+                report.suspicious.push(SuspiciousFile {
+                    path: path.clone(),
+                    reason: format!("{s:?}"),
+                });
+            }
 
-        if audio::needs_downsample(&props, opts.target_rate, opts.target_depth) {
-            report.downsampled.push(path.clone());
-            if !opts.dry_run {
-                audio::downsample(path, opts.target_rate, opts.target_depth)?;
+            if audio::needs_downsample(&props, opts.target_rate, opts.target_depth) {
+                report.downsampled.push(path.clone());
+                if !opts.dry_run {
+                    audio::downsample(path, opts.target_rate, opts.target_depth)?;
+                }
             }
         }
 

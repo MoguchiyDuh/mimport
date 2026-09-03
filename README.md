@@ -39,11 +39,18 @@ mimport mb album <release-group-mbid>
 mimport mb tracks <release-mbid>
 mimport mb track <text>
 
-mimport slskd search <query>
+mimport slskd search <query> [--fresh]
+mimport slskd searches
 mimport slskd search-status <id>
-mimport slskd fetch <search-id> <username> <directory> [<filename>] [--title <text>]
+mimport slskd search-remove <id>
+mimport slskd fetch <search-id> <username> <directory> [<filename>...]
+                     [--title <text>] [--wait-secs <n>]
 mimport slskd status <job-id|title>
 mimport slskd cancel <job-id|title> [--remove]
+mimport slskd retry <job-id|title> [--wait-secs <n>]
+mimport slskd downloads
+mimport slskd remove <username> <transfer-id>
+mimport slskd clear-completed
 mimport slskd browse <username> [<directory>]
 
 mimport postfix <job-id|path|title> [--dry-run]
@@ -71,11 +78,18 @@ is gitignored because it holds the credentials below; keep it out of version con
 - `[paths]` — library, downloads, staging, database.
 - `[musicbrainz]` — UA (required), rate limit, cache.
 - `[lidarr]` — `api.lidarr.audio` proxy (cache only).
-- `[slskd]` — Soulseek daemon URL, and **username/password** (sensitive), fetch timeouts.
+- `[slskd]` — Soulseek daemon URL, and **username/password** (sensitive). Fetch
+  wait window = `fetch_timeout_base_secs + fetch_timeout_per_mb_secs × total MB
+  + fetch_timeout_per_file_secs × file count`, re-armed on any observed
+  progress; `fetch --wait-secs` overrides it per call. Requires slskd ≥ 0.26
+  with `transfers.download.destination.subdirectory` set to
+  `${SOURCE_USERNAME}/${SOURCE_DIRECTORY}` so on-disk layout matches the job's
+  `local_dir` (`<downloads>/<username>/<remote parent dirname>`).
 - `[quality]` — postfix downsample target.
 - `[scoring]` — edition-scorer weights (optional, sane defaults).
 - `[cover_art]` — Cover Art Archive base URL and disk cache dir (optional; fetch is opt-in
-  via `import --cover-art`).
+  via `import --cover-art`). `itunes_fallback` (default on) falls back to the iTunes Search
+  API (`itunes_country`, default `JP`) when the archive has no cover for a release.
 - `[yt]` — `yt_dlp_path` (optional, defaults to `yt-dlp` on `$PATH`).
 
 Sensitive values (`slskd.username`, `slskd.password`) live in `config.toml` alongside

@@ -25,10 +25,11 @@ pub struct TagOverrides {
     pub label: Option<String>,
     pub genre: Option<String>,
     pub cover: Option<std::path::PathBuf>,
-    /// Track-position -> manual title, single-disc only. Multi-disc releases
-    /// with ambiguous positions across discs aren't addressable this way yet.
+    /// Manual track titles keyed `"<disc>:<position>"` or plain `"<position>"`.
+    /// A plain position applies only when unique across the release; on
+    /// multi-disc releases with duplicate positions, qualify the disc.
     #[serde(default)]
-    pub tracks: BTreeMap<u32, String>,
+    pub tracks: BTreeMap<String, String>,
 }
 
 /// One-shot CLI flag values layered on top of a loaded `TagOverrides`.
@@ -70,20 +71,32 @@ impl TagOverrides {
             self.cover = flags.cover;
         }
         for raw in flags.track_titles {
-            let (pos_str, title) = raw.split_once('=').ok_or_else(|| {
+            let (key, title) = raw.split_once('=').ok_or_else(|| {
                 return Error::TagOverrides(format!(
-                    "--track-title {raw:?} must be \"<position>=<title>\""
+                    "--track-title {raw:?} must be \"[<disc>:]<position>=<title>\""
                 ));
             })?;
-            let pos: u32 = pos_str.trim().parse().map_err(|_| {
+            let key = normalize_track_key(key).ok_or_else(|| {
                 return Error::TagOverrides(format!(
-                    "--track-title {raw:?} has a non-numeric position"
+                    "--track-title {raw:?} has a non-numeric [disc:]position"
                 ));
             })?;
-            self.tracks.insert(pos, title.to_string());
+            self.tracks.insert(key, title.to_string());
         }
         return Ok(());
     }
+}
+
+/// `"2:5"` or `"5"` -> canonical `"<disc>:<position>"` / `"<position>"` key.
+fn normalize_track_key(key: &str) -> Option<String> {
+    let key = key.trim();
+    if let Some((disc, pos)) = key.split_once(':') {
+        let disc: u32 = disc.trim().parse().ok()?;
+        let pos: u32 = pos.trim().parse().ok()?;
+        return Some(format!("{disc}:{pos}"));
+    }
+    let pos: u32 = key.parse().ok()?;
+    return Some(pos.to_string());
 }
 
 #[derive(Debug)]
@@ -231,12 +244,34 @@ fn resolve_tracks(
     overrides: &TagOverrides,
     unresolved: &mut Vec<Unresolved>,
 ) {
+    let mut per_position: BTreeMap<u32, u32> = BTreeMap::new();
+    for t in &release.tracks {
+        if let Some(p) = t.position {
+            *per_position.entry(p).or_default() += 1;
+        }
+    }
+
     for t in &mut release.tracks {
-        let manual = t.position.and_then(|p| return overrides.tracks.get(&p));
+        let manual = t.position.and_then(|pos| {
+            let disc = t.medium_position.unwrap_or(1);
+            if let Some(title) = overrides.tracks.get(&format!("{disc}:{pos}")) {
+                return Some(title.clone());
+            }
+            if per_position.get(&pos).copied().unwrap_or(0) > 1 {
+                if overrides.tracks.contains_key(&pos.to_string()) {
+                    tracing::warn!(
+                        "--track-title {pos}= is ambiguous across discs in release {}; use <disc>:{pos}=",
+                        release.id
+                    );
+                }
+                return None;
+            }
+            return overrides.tracks.get(&pos.to_string()).cloned();
+        });
         if let Some(title) = manual {
             if *title != t.title {
                 t.title_native = Some(t.title.clone());
-                t.title = title.clone();
+                t.title = title;
             }
             continue;
         }

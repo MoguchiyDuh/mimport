@@ -134,3 +134,20 @@ pub struct Directory {
     #[serde(default)]
     pub directories: Vec<Directory>,
 }
+
+/// One peer's entry in `GET /api/v0/transfers/downloads`.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct DownloadsResponse {
+    pub username: String,
+    #[serde(default)]
+    pub directories: Vec<DirectoryTransfers>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct DirectoryTransfers {
+    pub directory: String,
+    #[serde(rename = "fileCount", default)]
+    pub file_count: u32,
+    #[serde(default)]
+    pub files: Vec<Transfer>,
+}

@@ -50,6 +50,12 @@ pub fn fetch(
     } else {
         cmd.arg("--no-playlist");
     }
+    if let Some(path) = &cfg.cookies {
+        cmd.args(["--cookies"]).arg(path);
+    }
+    if let Some(browser) = &cfg.cookies_from_browser {
+        cmd.args(["--cookies-from-browser"]).arg(browser);
+    }
     cmd.arg(url);
 
     let output = cmd.output().map_err(|e| {
