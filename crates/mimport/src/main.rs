@@ -47,7 +47,6 @@ fn run(cli: &Cli) -> mimport_core::Result<()> {
         Command::Lidarr(cmd) => run_lidarr(cli, &cfg, cmd),
         Command::Mb(cmd) => run_mb(cli, &cfg, cmd),
         Command::Slskd(cmd) => run_slskd(cli, &cfg, cmd),
-        Command::Postfix { target, dry_run } => run_postfix(cli, &cfg, target, *dry_run),
         Command::Import {
             target,
             release,
@@ -64,6 +63,7 @@ fn run(cli: &Cli) -> mimport_core::Result<()> {
             allow_native,
             move_files,
             allow_partial,
+            cleanup,
             dry_run,
         } => run_import(
             cli,
@@ -84,6 +84,7 @@ fn run(cli: &Cli) -> mimport_core::Result<()> {
                 allow_native: *allow_native,
                 move_files: *move_files,
                 allow_partial: *allow_partial,
+                cleanup: *cleanup,
                 dry_run: *dry_run,
             },
         ),
@@ -168,6 +169,9 @@ fn run_lidarr(cli: &Cli, cfg: &Config, cmd: &LidarrCmd) -> mimport_core::Result<
 }
 
 fn run_mb(cli: &Cli, cfg: &Config, cmd: &MbCmd) -> mimport_core::Result<()> {
+    tracing::warn!(
+        "mb is rate-limited (~1 req/s, multi-round-trip); prefer the lidarr commands unless you specifically need direct MusicBrainz data"
+    );
     let client = MbClient::new(&cfg.musicbrainz)?;
     match cmd {
         MbCmd::Artist { query } => {
@@ -227,33 +231,6 @@ fn resolve_job_or_path(
     }
 }
 
-fn run_postfix(cli: &Cli, cfg: &Config, target: &str, dry_run: bool) -> mimport_core::Result<()> {
-    let opts = postfix::Options {
-        dry_run,
-        target_rate: cfg.quality.target_samplerate,
-        target_depth: cfg.quality.target_bitdepth,
-    };
-
-    let (job, dir) = resolve_job_or_path(cfg, target)?;
-    let report = postfix::run(&dir, &opts)?;
-
-    let Some(job) = job else {
-        output::print(&report, cli.json);
-        return Ok(());
-    };
-    // Postfixing an already-imported job's downloads must not downgrade its
-    // status; a no-op cancel guard exists for the same reason.
-    let job = if dry_run || job.status == jobs::STATUS_IMPORTED {
-        job
-    } else {
-        let db = jobs::open(&cfg.paths.database)?;
-        jobs::set_job_status(&db, job.id, jobs::STATUS_POSTFIXED)?;
-        jobs::get_job(&db, job.id)?
-    };
-    output::print(&serde_json::json!({"job": job, "report": report}), cli.json);
-    return Ok(());
-}
-
 struct ImportFlags<'a> {
     force: Option<&'a std::path::Path>,
     tags: Option<&'a std::path::Path>,
@@ -268,6 +245,7 @@ struct ImportFlags<'a> {
     allow_native: bool,
     move_files: bool,
     allow_partial: bool,
+    cleanup: bool,
     dry_run: bool,
 }
 
@@ -279,6 +257,17 @@ fn run_import(
     flags: ImportFlags,
 ) -> mimport_core::Result<()> {
     let (job, dir) = resolve_job_or_path(cfg, target)?;
+
+    // Postfix is part of import: strip junk tags and downsample lossless files
+    // to the [quality] target before matching. Dry-run only reports.
+    let postfix_report = postfix::run(
+        &dir,
+        &postfix::Options {
+            dry_run: flags.dry_run,
+            target_rate: cfg.quality.target_samplerate,
+            target_depth: cfg.quality.target_bitdepth,
+        },
+    )?;
 
     let mb_client = MbClient::new(&cfg.musicbrainz)?;
     let raw_release = mb_q::release_with_tracks(&mb_client, release_mbid)?;
@@ -348,6 +337,7 @@ fn run_import(
     };
 
     let mut imported: Vec<import::ImportedFile> = Vec::new();
+    let mut cleanup: Option<import::CleanupReport> = None;
     let mut job = job;
     if !blocked {
         let opts = import::ImportOptions {
@@ -366,6 +356,9 @@ fn run_import(
                 jobs::set_job_status(&db, j.id, jobs::STATUS_IMPORTED)?;
                 job = Some(jobs::get_job(&db, j.id)?);
             }
+            if flags.cleanup {
+                cleanup = Some(import::cleanup_sources(&imported, &dir)?);
+            }
         }
     }
 
@@ -375,10 +368,12 @@ fn run_import(
             "release": release.id,
             "blocked": blocked,
             "cover_art": cover_art.is_some(),
+            "postfix": postfix_report,
             "matched": report.matched,
             "unmatched_files": report.unmatched_files,
             "missing_tracks": report.missing_tracks,
             "imported": imported,
+            "cleanup": cleanup,
         }),
         cli.json,
     );
@@ -396,6 +391,54 @@ fn run_library(cli: &Cli, cfg: &Config, cmd: &LibraryCmd) -> mimport_core::Resul
         LibraryCmd::Show { id } => {
             let track = library::get_track(&db, *id)?;
             output::print(&track, cli.json);
+        }
+        LibraryCmd::Edit {
+            id,
+            rename,
+            dry_run,
+            fields,
+        } => {
+            let edits = library::parse_edits(fields)?;
+            let track = library::get_track(&db, *id)?;
+            let new_path = if *rename {
+                library::planned_rename(&track)
+            } else {
+                None
+            };
+            if edits.is_empty() && new_path.is_none() {
+                output::print(
+                    &serde_json::json!({"track": track, "edits": edits, "renamed_to": new_path}),
+                    cli.json,
+                );
+                return Ok(());
+            }
+            if let Some(np) = &new_path
+                && Path::new(np).exists()
+            {
+                return Err(Error::io(
+                    np,
+                    std::io::Error::new(
+                        std::io::ErrorKind::AlreadyExists,
+                        "renamed destination already exists",
+                    ),
+                ));
+            }
+            if !*dry_run {
+                library::rewrite_tags(Path::new(&track.path), &edits)?;
+                if let Some(np) = &new_path {
+                    std::fs::rename(&track.path, np).map_err(|e| return Error::io(np, e))?;
+                }
+                let updated = library::edit_track(&db, *id, &edits, new_path.as_deref())?;
+                output::print(
+                    &serde_json::json!({"track": updated, "edits": edits, "renamed_to": new_path}),
+                    cli.json,
+                );
+            } else {
+                output::print(
+                    &serde_json::json!({"track": track, "edits": edits, "renamed_to": new_path, "dry_run": true}),
+                    cli.json,
+                );
+            }
         }
         LibraryCmd::Remove { files, query } => {
             let mut query = query.clone();
@@ -879,10 +922,21 @@ fn run_yt_playlist(
 fn run_slskd(cli: &Cli, cfg: &Config, cmd: &SlskdCmd) -> mimport_core::Result<()> {
     let client = SlskdClient::new(&cfg.slskd)?;
     match cmd {
-        SlskdCmd::Search { query, fresh } => {
+        SlskdCmd::Search {
+            query,
+            fresh,
+            all,
+        } => {
             let outcome = slskd_q::search(&client, query, *fresh)?;
+            let view = slskd_q::view_search(
+                &outcome.search,
+                slskd_q::SearchView {
+                    lossless_only: true,
+                    all: *all,
+                },
+            );
             output::print(
-                &serde_json::json!({"reused": outcome.reused, "search": outcome.search}),
+                &serde_json::json!({"reused": outcome.reused, "search": view}),
                 cli.json,
             );
         }
@@ -890,9 +944,16 @@ fn run_slskd(cli: &Cli, cfg: &Config, cmd: &SlskdCmd) -> mimport_core::Result<()
             let searches = slskd_q::list_searches(&client)?;
             output::print(&searches, cli.json);
         }
-        SlskdCmd::SearchStatus { id } => {
+        SlskdCmd::SearchStatus { id, all } => {
             let status = slskd_q::search_status(&client, id)?;
-            output::print(&status, cli.json);
+            let view = slskd_q::view_search(
+                &status,
+                slskd_q::SearchView {
+                    lossless_only: true,
+                    all: *all,
+                },
+            );
+            output::print(&view, cli.json);
         }
         SlskdCmd::SearchRemove { id } => {
             slskd_q::search_remove(&client, id)?;
@@ -972,7 +1033,7 @@ fn run_slskd(cli: &Cli, cfg: &Config, cmd: &SlskdCmd) -> mimport_core::Result<()
             let files = jobs::get_job_files(&db, job.id)?;
             // Only overwrite job.status if something was actually cancelled here —
             // otherwise a no-op cancel on an already-terminal job would clobber a
-            // downstream status like "postfixed" back to a raw fetch-outcome label.
+            // downstream status like "imported" back to a raw fetch-outcome label.
             if cancelled_any {
                 let states: Vec<&str> = files.iter().map(|f| return f.state.as_str()).collect();
                 jobs::set_job_status(&db, job.id, jobs::derive_status_from_states(&states))?;

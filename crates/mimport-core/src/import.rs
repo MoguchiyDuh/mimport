@@ -454,6 +454,53 @@ pub struct ImportedFile {
     pub dest: PathBuf,
 }
 
+#[derive(Debug, Default, Serialize)]
+pub struct CleanupReport {
+    pub deleted_files: Vec<PathBuf>,
+    pub removed_dirs: Vec<PathBuf>,
+}
+
+/// Deletes every imported source file (the download-side copy) and prunes
+/// now-empty directories, never walking above `root`. Sources that no longer
+/// exist (--move already consumed them, or cleanup ran before) are skipped;
+/// a source that IS the placed library file (re-import in place) is kept.
+pub fn cleanup_sources(imported: &[ImportedFile], root: &Path) -> Result<CleanupReport> {
+    let mut report = CleanupReport::default();
+    let mut parent_dirs: Vec<PathBuf> = Vec::new();
+
+    for f in imported {
+        if same_file(&f.source, &f.dest) || !f.source.exists() {
+            continue;
+        }
+        std::fs::remove_file(&f.source).map_err(|e| return Error::io(&f.source, e))?;
+        report.deleted_files.push(f.source.clone());
+        if let Some(parent) = f.source.parent() {
+            let parent = parent.to_path_buf();
+            if !parent_dirs.contains(&parent) {
+                parent_dirs.push(parent);
+            }
+        }
+    }
+
+    for start in parent_dirs {
+        let mut cur = Some(start.as_path());
+        while let Some(dir) = cur {
+            if !dir.starts_with(root) {
+                break;
+            }
+            match std::fs::remove_dir(dir) {
+                Ok(()) => {
+                    report.removed_dirs.push(dir.to_path_buf());
+                    cur = dir.parent();
+                }
+                Err(_) => break,
+            }
+        }
+    }
+
+    return Ok(report);
+}
+
 fn place_file(source: &Path, dest: &Path, move_files: bool) -> Result<()> {
     if !move_files {
         std::fs::copy(source, dest).map_err(|e| return Error::io(dest, e))?;
@@ -821,7 +868,7 @@ fn looks_like_mbid(s: &str) -> bool {
     return s.len() == 36 && s.bytes().filter(|b| return *b == b'-').count() == 4;
 }
 
-fn sanitize(s: &str) -> String {
+pub fn sanitize(s: &str) -> String {
     let cleaned: String = s
         .chars()
         .map(|c| return if "/\\:*?\"<>|".contains(c) { '_' } else { c })
