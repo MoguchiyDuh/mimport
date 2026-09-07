@@ -7,7 +7,7 @@ use crate::error::{Error, Result};
 use super::client::SlskdClient;
 use super::types::{
     Directory, DirectoryContentsRequest, DownloadsResponse, EnqueueResult, Search, SearchRequest,
-    SlskdFile, Transfer,
+    SearchResponseItem, SlskdFile, Transfer,
 };
 
 pub use super::types::QueueDownloadRequestItem;
@@ -99,6 +99,81 @@ pub fn list_searches(client: &SlskdClient) -> Result<Vec<Search>> {
 pub fn search_status(client: &SlskdClient, id: &str) -> Result<Search> {
     let path = format!("/api/v0/searches/{}?includeResponses=true", urlencode(id));
     return client.get(&path);
+}
+
+/// Extensions treated as lossless when filtering search results. Anything
+/// carrying both a bit depth and a sample rate also counts, whatever the
+/// extension claims.
+pub const LOSSLESS_EXTENSIONS: &[&str] = &["flac", "wav", "ape", "wv", "aiff", "alac"];
+
+/// How many responses a search view shows unless `all` is requested.
+pub const DEFAULT_TOP_RESPONSES: usize = 5;
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct SearchView {
+    pub lossless_only: bool,
+    pub all: bool,
+}
+
+/// Display-layer projection of a completed search: files filtered to lossless,
+/// responses ranked free-slot first, then fastest upload speed, then shortest
+/// queue, then most files — truncated to the top few unless `all`. Purely
+/// presentational: fetch selectors always resolve against the full,
+/// unfiltered search.
+pub fn view_search(search: &Search, opts: SearchView) -> Search {
+    let mut responses: Vec<SearchResponseItem> = Vec::with_capacity(search.responses.len());
+    for r in &search.responses {
+        let files: Vec<SlskdFile> = if opts.lossless_only {
+            r.files.iter().filter(|f| return is_lossless_file(f)).cloned().collect()
+        } else {
+            r.files.clone()
+        };
+        if opts.lossless_only && files.is_empty() {
+            continue;
+        }
+        let locked_files = if opts.lossless_only {
+            r.locked_files.iter().filter(|f| return is_lossless_file(f)).cloned().collect()
+        } else {
+            r.locked_files.clone()
+        };
+        let mut viewed = r.clone();
+        viewed.files = files;
+        viewed.locked_files = locked_files;
+        viewed.file_count = viewed.files.len() as u32;
+        viewed.locked_file_count = viewed.locked_files.len() as u32;
+        responses.push(viewed);
+    }
+
+    responses.sort_by(|a, b| {
+        return b
+            .has_free_upload_slot
+            .cmp(&a.has_free_upload_slot)
+            .then_with(|| return b.upload_speed.cmp(&a.upload_speed))
+            .then_with(|| return a.queue_length.cmp(&b.queue_length))
+            .then_with(|| return b.file_count.cmp(&a.file_count))
+            .then_with(|| return a.username.cmp(&b.username));
+    });
+    if !opts.all {
+        responses.truncate(DEFAULT_TOP_RESPONSES);
+    }
+
+    let mut viewed = search.clone();
+    viewed.responses = responses;
+    viewed.file_count = viewed.responses.iter().map(|r| return r.file_count).sum();
+    viewed.response_count = viewed.responses.len() as u32;
+    return viewed;
+}
+
+fn is_lossless_file(f: &SlskdFile) -> bool {
+    let by_ext = f
+        .extension
+        .as_deref()
+        .is_some_and(|e| {
+            return LOSSLESS_EXTENSIONS
+                .iter()
+                .any(|l| return l.eq_ignore_ascii_case(e));
+        });
+    return by_ext || (f.bit_depth.is_some() && f.sample_rate.is_some());
 }
 
 pub fn search_remove(client: &SlskdClient, id: &str) -> Result<()> {

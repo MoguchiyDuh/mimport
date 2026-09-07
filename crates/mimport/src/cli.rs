@@ -17,22 +17,24 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 pub enum Command {
+    /// Preferred metadata backend — the fast proxy. Use it for artist/album
+    /// discovery and edition ranking; `mb` is the slow fallback.
     #[command(subcommand)]
     Lidarr(LidarrCmd),
 
+    /// Direct MusicBrainz — slow (~1 req/s, rate-limited, multi-round-trip).
+    /// Prefer `lidarr` for everything it covers; use `mb` only for what the
+    /// proxy lacks (recording search) or when the proxy is unavailable.
     #[command(subcommand)]
     Mb(MbCmd),
 
+    /// Soulseek daemon — search, fetch, and manage transfers
     #[command(subcommand)]
     Slskd(SlskdCmd),
 
-    Postfix {
-        /// job id, jobs.title, or a raw filesystem path (ad hoc, outside job tracking)
-        target: String,
-        #[arg(long)]
-        dry_run: bool,
-    },
-
+    /// Match files against an MB release, postfix them (junk-tag strip +
+    /// downsample lossless to the [quality] target), write clean tags, and
+    /// copy (or --move) into the library.
     Import {
         /// job id, jobs.title, or a raw filesystem path (ad hoc, outside job tracking)
         target: String,
@@ -77,6 +79,10 @@ pub enum Command {
         /// unmatched files still block
         #[arg(long)]
         allow_partial: bool,
+        /// after a successful import, delete every source file that was copied
+        /// (and the source dir, once no audio files remain in it)
+        #[arg(long)]
+        cleanup: bool,
         #[arg(long)]
         dry_run: bool,
     },
@@ -96,6 +102,7 @@ pub enum Command {
         fetch: bool,
     },
 
+    /// YouTube/YouTube Music fetch + import (URL-only)
     #[command(subcommand)]
     Yt(YtCmd),
 }
@@ -111,6 +118,20 @@ pub enum LibraryCmd {
     },
     /// Full metadata for one row by id.
     Show { id: i64 },
+    /// Edits one track: `field=value` pairs update the index row AND the
+    /// file's tags. `--rename` also re-derives the filename from the naming
+    /// scheme and moves the file. `--dry-run` shows the plan without writing.
+    Edit {
+        id: i64,
+        /// re-derive the filename from the (edited) track/title
+        #[arg(long)]
+        rename: bool,
+        #[arg(long)]
+        dry_run: bool,
+        /// field=value pairs: title, artist, album, year, track, disc
+        #[arg(trailing_var_arg = true)]
+        fields: Vec<String>,
+    },
     /// Deletes matching rows from the index; --files also deletes the
     /// underlying files from disk (best-effort — already-missing files
     /// aren't an error).
@@ -203,17 +224,29 @@ pub enum YtCmd {
 pub enum SlskdCmd {
     /// Search Soulseek. Reuses the latest completed search with the same
     /// query text that returned files; `--fresh` always runs a new one.
+    /// The result view is lossless-only and ranked free-slot first, then
+    /// fastest upload speed; only the top few responses are shown unless
+    /// `--all` is passed.
     Search {
         query: String,
         #[arg(long)]
         fresh: bool,
+        /// show every response instead of the top few
+        #[arg(long)]
+        all: bool,
     },
 
     /// List all searches (no responses).
     Searches,
 
-    /// Detailed status of one search, including responses.
-    SearchStatus { id: String },
+    /// Detailed status of one search, in the same lossless-first,
+    /// top-few view as `search`; `--all` shows everything.
+    SearchStatus {
+        id: String,
+        /// show every response instead of the top few
+        #[arg(long)]
+        all: bool,
+    },
 
     /// Delete a search and its responses.
     SearchRemove { id: String },

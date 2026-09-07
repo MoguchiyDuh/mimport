@@ -7,14 +7,22 @@ database  = "/tmp/mimport-dev/mimport.db"
 [musicbrainz]
 user_agent = "mimport-dev/0.1.0 ( kirill@localhost )"
 cache_dir = "/tmp/mimport-dev/cache/mb"
+# base_url          = "https://musicbrainz.org/ws/2"
+# rate_limit_per_sec = 1.0
+# cache_ttl_secs     = 2592000
+# max_retries        = 5
 
 [lidarr]
 cache_dir = "/tmp/mimport-dev/cache/lidarr"
+# base_url     = "https://api.lidarr.audio/api/v0.4"
+# cache_ttl_secs = 2592000
+# max_retries     = 5
 
 [slskd]
 base_url = "http://127.0.0.1:8111"
 username = "CHANGE_ME"
 password = "CHANGE_ME"
+# request_timeout_secs = 30
 # fetch wait window = base + per_mb * total MB + per_file * file count,
 # re-armed on any observed progress; per-call override with --wait-secs
 # fetch_timeout_base_secs     = 30
@@ -27,12 +35,16 @@ target_bitdepth = 16
 
 [cover_art]
 base_url = "https://coverartarchive.org"
-# cache_dir = "/tmp/mimport-dev/cache/coverart"  # defaults under the OS cache dir
-# itunes_fallback = true    # fall back to the iTunes Search API when CAA has no cover
-# itunes_country = "JP"     # iTunes storefront for the fallback
+# cache_dir         = "/tmp/mimport-dev/cache/coverart"  # defaults under the OS cache dir
+# cache_ttl_secs    = 2592000
+# negative_ttl_secs = 604800   # cache "no cover found" for a week
+# itunes_fallback   = true     # fall back to the iTunes Search API when CAA has no cover
+# itunes_country    = "JP"     # iTunes storefront for the fallback
 
 [yt]
 yt_dlp_path = "yt-dlp"
+# cookies              = "/path/to/cookies.txt"   # Netscape-format jar for yt-dlp --cookies
+# cookies_from_browser = "firefox"                # yt-dlp --cookies-from-browser
 
 # [scoring] omitted — every field has a hardcoded default (see
 # mimport-core/src/config.rs Scoring/StatusWeights/MediaWeights/etc.);

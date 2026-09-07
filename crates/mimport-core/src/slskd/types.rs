@@ -21,7 +21,7 @@ impl SearchRequest {
     }
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Search {
     pub id: String,
     pub token: i64,
@@ -44,7 +44,7 @@ pub struct Search {
     pub ended_at: Option<String>,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct SearchResponseItem {
     pub username: String,
     pub token: i64,
@@ -64,7 +64,7 @@ pub struct SearchResponseItem {
     pub upload_speed: i64,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct SlskdFile {
     pub filename: String,
     pub size: i64,

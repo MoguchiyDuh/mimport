@@ -1,13 +1,20 @@
-//! Library index + query language over `library_tracks`.
+//! Library index + query language over `library_tracks`, plus track editing
+//! (index row + file tags + optional rename).
 
 use std::path::Path;
 
+use lofty::config::{ParseOptions, WriteOptions};
+use lofty::file::{AudioFile, TaggedFileExt};
+use lofty::flac::FlacFile;
+use lofty::ogg::OpusFile;
+use lofty::probe::read_from_path;
+use lofty::tag::{Accessor, ItemKey, Tag};
 use rusqlite::types::Value;
 use rusqlite::{Connection, params, params_from_iter};
 use serde::Serialize;
 
 use crate::error::{Error, Result};
-use crate::import::{ImportedFile, MatchedTrack};
+use crate::import::{ImportedFile, MatchedTrack, sanitize};
 use crate::release::NormalizedRelease;
 use crate::scorer::text_similarity;
 
@@ -508,4 +515,276 @@ fn prune_empty_dirs(mut dir: &Path, stop: Option<&Path>) {
             None => return,
         }
     }
+}
+
+// --- Edit -------------------------------------------------------------------
+
+#[derive(Debug, Default, Serialize)]
+pub struct TrackEdits {
+    pub title: Option<String>,
+    pub artist: Option<String>,
+    pub album: Option<String>,
+    pub year: Option<String>,
+    pub track: Option<i64>,
+    pub disc: Option<i64>,
+}
+
+impl TrackEdits {
+    pub fn is_empty(&self) -> bool {
+        return self.title.is_none()
+            && self.artist.is_none()
+            && self.album.is_none()
+            && self.year.is_none()
+            && self.track.is_none()
+            && self.disc.is_none();
+    }
+}
+
+/// Parses `field=value` pairs. Editable fields are exactly the indexed ones
+/// that also live in the file's tags: `title`, `artist`, `album`, `year`,
+/// `track`, `disc`.
+pub fn parse_edits(pairs: &[String]) -> Result<TrackEdits> {
+    let mut edits = TrackEdits::default();
+    for pair in pairs {
+        let Some((field, value)) = pair.split_once('=') else {
+            return Err(Error::QuerySyntax {
+                term: pair.clone(),
+                reason: "expected field=value",
+            });
+        };
+        if value.is_empty() {
+            return Err(Error::QuerySyntax {
+                term: pair.clone(),
+                reason: "empty value",
+            });
+        }
+        match field.to_ascii_lowercase().as_str() {
+            "title" => edits.title = Some(value.to_string()),
+            "artist" => edits.artist = Some(value.to_string()),
+            "album" => edits.album = Some(value.to_string()),
+            "year" => edits.year = Some(value.to_string()),
+            "track" => edits.track = Some(parse_edit_number(pair, value)?),
+            "disc" => edits.disc = Some(parse_edit_number(pair, value)?),
+            _ => {
+                return Err(Error::QuerySyntax {
+                    term: pair.clone(),
+                    reason: "unknown field (title/artist/album/year/track/disc)",
+                });
+            }
+        }
+    }
+    return Ok(edits);
+}
+
+fn parse_edit_number(term: &str, value: &str) -> Result<i64> {
+    return value.parse::<i64>().map_err(|_| {
+        return Error::QuerySyntax {
+            term: term.to_string(),
+            reason: "not a number",
+        };
+    });
+}
+
+/// Applies the edits to the index row (and `new_path` when the file was
+/// renamed). Returns the updated row.
+pub fn edit_track(
+    conn: &Connection,
+    id: i64,
+    edits: &TrackEdits,
+    new_path: Option<&str>,
+) -> Result<LibraryTrack> {
+    let mut sets: Vec<String> = Vec::new();
+    let mut values: Vec<Value> = Vec::new();
+    let mut set = |col: &str, v: Value| {
+        sets.push(format!("{col} = ?{}", values.len() + 1));
+        values.push(v);
+    };
+    if let Some(v) = &edits.title {
+        set("title", Value::Text(v.clone()));
+    }
+    if let Some(v) = &edits.artist {
+        set("artist", Value::Text(v.clone()));
+    }
+    if let Some(v) = &edits.album {
+        set("album", Value::Text(v.clone()));
+    }
+    if let Some(v) = &edits.year {
+        set("year", Value::Text(v.clone()));
+    }
+    if let Some(v) = edits.track {
+        set("track_position", Value::Integer(v));
+    }
+    if let Some(v) = edits.disc {
+        set("disc_position", Value::Integer(v));
+    }
+    if let Some(p) = new_path {
+        set("path", Value::Text(p.to_string()));
+    }
+    if !sets.is_empty() {
+        values.push(Value::Integer(id));
+        let sql = format!(
+            "UPDATE library_tracks SET {} WHERE id = ?{}",
+            sets.join(", "),
+            values.len()
+        );
+        conn.execute(&sql, params_from_iter(values.iter()))?;
+    }
+    return get_track(conn, id);
+}
+
+/// Rewrites the edited fields in the file's tags — a patch, not a fresh tag.
+/// VorbisComments (FLAC/Opus, i.e. this whole library) is written directly,
+/// same reason import writes it directly (lofty's generic `ItemKey` path has
+/// no mapping for several Vorbis fields); other formats patch their primary
+/// tag through the generic API.
+pub fn rewrite_tags(path: &Path, edits: &TrackEdits) -> Result<()> {
+    if edits.is_empty() {
+        return Ok(());
+    }
+    let ext = path
+        .extension()
+        .and_then(|e| return e.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    match ext.as_str() {
+        "flac" => {
+            let mut file = std::fs::File::open(path).map_err(|e| return Error::io(path, e))?;
+            let mut f = FlacFile::read_from(&mut file, ParseOptions::new()).map_err(|e| {
+                return Error::Probe {
+                    path: path.to_path_buf(),
+                    reason: e.to_string(),
+                };
+            })?;
+            if let Some(vc) = f.vorbis_comments_mut() {
+                fill_vorbis_edits(vc, edits);
+            }
+            f.save_to_path(path, WriteOptions::default()).map_err(|e| {
+                return Error::Probe {
+                    path: path.to_path_buf(),
+                    reason: e.to_string(),
+                };
+            })?;
+        }
+        "opus" => {
+            let mut file = std::fs::File::open(path).map_err(|e| return Error::io(path, e))?;
+            let mut f = OpusFile::read_from(&mut file, ParseOptions::new()).map_err(|e| {
+                return Error::Probe {
+                    path: path.to_path_buf(),
+                    reason: e.to_string(),
+                };
+            })?;
+            fill_vorbis_edits(f.vorbis_comments_mut(), edits);
+            f.save_to_path(path, WriteOptions::default()).map_err(|e| {
+                return Error::Probe {
+                    path: path.to_path_buf(),
+                    reason: e.to_string(),
+                };
+            })?;
+        }
+        _ => {
+            let mut tagged = read_from_path(path).map_err(|e| {
+                return Error::Probe {
+                    path: path.to_path_buf(),
+                    reason: e.to_string(),
+                };
+            })?;
+            match tagged.primary_tag_mut() {
+                Some(tag) => fill_generic_edits(tag, edits),
+                None => {
+                    let mut tag = Tag::new(tagged.primary_tag_type());
+                    fill_generic_edits(&mut tag, edits);
+                    let _ = tagged.insert_tag(tag);
+                }
+            }
+            tagged.save_to_path(path, WriteOptions::default()).map_err(|e| {
+                return Error::Probe {
+                    path: path.to_path_buf(),
+                    reason: e.to_string(),
+                };
+            })?;
+        }
+    }
+    return Ok(());
+}
+
+fn fill_vorbis_edits(vc: &mut lofty::ogg::VorbisComments, edits: &TrackEdits) {
+    if let Some(v) = &edits.title {
+        vc.set_title(v.clone());
+    }
+    if let Some(v) = &edits.artist {
+        vc.set_artist(v.clone());
+        // Keep grouping fields in sync so players don't surface a stale
+        // ALBUMARTIST/ARTISTS next to the edited ARTIST (see import::fill_vorbis).
+        vc.insert("ALBUMARTIST".to_string(), v.clone());
+        vc.insert("ALBUM ARTIST".to_string(), v.clone());
+        vc.insert("ARTISTS".to_string(), v.clone());
+    }
+    if let Some(v) = &edits.album {
+        vc.set_album(v.clone());
+    }
+    if let Some(v) = &edits.year {
+        vc.insert("DATE".to_string(), v.clone());
+    }
+    if let Some(v) = edits.track {
+        vc.set_track(v.max(0) as u32);
+    }
+    if let Some(v) = edits.disc {
+        vc.set_disk(v.max(0) as u32);
+    }
+}
+
+fn fill_generic_edits(tag: &mut Tag, edits: &TrackEdits) {
+    if let Some(v) = &edits.title {
+        tag.set_title(v.clone());
+    }
+    if let Some(v) = &edits.artist {
+        tag.set_artist(v.clone());
+        let _ = tag.insert_text(ItemKey::AlbumArtist, v.clone());
+        let _ = tag.insert_text(ItemKey::TrackArtists, v.clone());
+    }
+    if let Some(v) = &edits.album {
+        tag.set_album(v.clone());
+    }
+    if let Some(v) = &edits.year {
+        let _ = tag.insert_text(ItemKey::RecordingDate, v.clone());
+    }
+    if let Some(v) = edits.track {
+        tag.set_track(v.max(0) as u32);
+    }
+    if let Some(v) = edits.disc {
+        tag.set_disk(v.max(0) as u32);
+    }
+}
+
+/// Filename the track would carry under the naming scheme, as a full path in
+/// the same directory; `None` when it can't be derived (no track position) or
+/// already matches. Preserves the `<disc>-<track>` prefix style when the
+/// current filename uses it.
+pub fn planned_rename(track: &LibraryTrack) -> Option<String> {
+    let path = Path::new(&track.path);
+    let file_name = path.file_name()?.to_str()?;
+    let (stem, ext) = file_name.rsplit_once('.')?;
+    let track_num = track.track_position?;
+    if track_num <= 0 || track_num > 99 {
+        return None;
+    }
+
+    let head = stem.split(" - ").next().unwrap_or("");
+    let parts: Vec<&str> = head.split('-').collect();
+    let current_is_multi = parts.len() == 2
+        && parts
+            .iter()
+            .all(|p| return p.len() == 2 && p.bytes().all(|b| return b.is_ascii_digit()));
+    let new_head = if current_is_multi {
+        let disc = track.disc_position.unwrap_or(1).clamp(1, 99);
+        format!("{disc:02}-{track_num:02}")
+    } else {
+        format!("{track_num:02}")
+    };
+
+    let new_file_name = format!("{new_head} - {}.{ext}", sanitize(&track.title));
+    if new_file_name == file_name {
+        return None;
+    }
+    return Some(path.with_file_name(new_file_name).to_string_lossy().to_string());
 }

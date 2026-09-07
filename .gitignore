@@ -1,5 +1,5 @@
 /target
-.k-framework/
+.k/
 config.toml
 *.db
 .env

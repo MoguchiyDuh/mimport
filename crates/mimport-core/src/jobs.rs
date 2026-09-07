@@ -12,7 +12,6 @@ pub const STATUS_FETCHED: &str = "fetched";
 pub const STATUS_PARTIAL: &str = "partial";
 pub const STATUS_FAILED: &str = "failed";
 pub const STATUS_CANCELLED: &str = "cancelled";
-pub const STATUS_POSTFIXED: &str = "postfixed";
 pub const STATUS_IMPORTED: &str = "imported";
 
 #[derive(Debug, Clone, Serialize)]
