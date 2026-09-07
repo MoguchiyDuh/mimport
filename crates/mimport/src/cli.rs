@@ -119,11 +119,11 @@ pub enum LibraryCmd {
     /// Full metadata for one row by id.
     Show { id: i64 },
     /// Edits one track: `field=value` pairs update the index row AND the
-    /// file's tags. `--rename` also re-derives the filename from the naming
+    /// file's tags. `--rename` also re-derives the full library path from
     /// scheme and moves the file. `--dry-run` shows the plan without writing.
     Edit {
         id: i64,
-        /// re-derive the filename from the (edited) track/title
+        /// re-derive the library path from the edited fields
         #[arg(long)]
         rename: bool,
         #[arg(long)]

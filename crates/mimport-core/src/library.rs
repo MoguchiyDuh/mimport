@@ -756,35 +756,58 @@ fn fill_generic_edits(tag: &mut Tag, edits: &TrackEdits) {
     }
 }
 
-/// Filename the track would carry under the naming scheme, as a full path in
-/// the same directory; `None` when it can't be derived (no track position) or
-/// already matches. Preserves the `<disc>-<track>` prefix style when the
-/// current filename uses it.
-pub fn planned_rename(track: &LibraryTrack) -> Option<String> {
+/// Destination the track would carry under the naming scheme, as a full path
+/// under `library_root` (`Artist/Album (Year)/NN - Title.ext`, year suffix
+/// omitted when unknown); `None` when it already matches. Computed from the
+/// pending edits over the stored row, so artist/album/year/title/track/disc
+/// changes all relocate the file. Preserves the `<disc>-<track>` prefix style
+/// when the current filename uses it, and the current prefix when the new
+/// position is missing or out of range.
+pub fn planned_rename(
+    track: &LibraryTrack,
+    edits: &TrackEdits,
+    library_root: &Path,
+) -> Option<String> {
+    let artist = edits.artist.clone().unwrap_or_else(|| return track.artist.clone());
+    let album = edits.album.clone().unwrap_or_else(|| return track.album.clone());
+    let title = edits.title.clone().unwrap_or_else(|| return track.title.clone());
+    let year = edits.year.clone().or_else(|| return track.year.clone());
+    let track_num = edits.track.or(track.track_position);
+    let disc = edits.disc.or(track.disc_position).unwrap_or(1).clamp(1, 99);
+    let artist_dir = sanitize(&artist);
+    let album_dir = match year.as_deref().unwrap_or("") {
+        "" => sanitize(&album),
+        y => sanitize(&format!("{album} ({y})")),
+    };
+
     let path = Path::new(&track.path);
     let file_name = path.file_name()?.to_str()?;
     let (stem, ext) = file_name.rsplit_once('.')?;
-    let track_num = track.track_position?;
-    if track_num <= 0 || track_num > 99 {
-        return None;
-    }
-
     let head = stem.split(" - ").next().unwrap_or("");
     let parts: Vec<&str> = head.split('-').collect();
     let current_is_multi = parts.len() == 2
         && parts
             .iter()
             .all(|p| return p.len() == 2 && p.bytes().all(|b| return b.is_ascii_digit()));
-    let new_head = if current_is_multi {
-        let disc = track.disc_position.unwrap_or(1).clamp(1, 99);
-        format!("{disc:02}-{track_num:02}")
-    } else {
-        format!("{track_num:02}")
+    let new_head = match track_num {
+        Some(n) if n >= 1 && n <= 99 => {
+            if current_is_multi {
+                format!("{disc:02}-{n:02}")
+            } else {
+                format!("{n:02}")
+            }
+        }
+        _ => head.to_string(),
     };
 
-    let new_file_name = format!("{new_head} - {}.{ext}", sanitize(&track.title));
-    if new_file_name == file_name {
+    let new_file_name = format!("{new_head} - {}.{ext}", sanitize(&title));
+    let dest = library_root
+        .join(artist_dir)
+        .join(album_dir)
+        .join(new_file_name);
+    let dest_str = dest.to_string_lossy().to_string();
+    if dest_str == track.path {
         return None;
     }
-    return Some(path.with_file_name(new_file_name).to_string_lossy().to_string());
+    return Some(dest_str);
 }
