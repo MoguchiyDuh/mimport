@@ -114,7 +114,7 @@ resolve against the full, unfiltered search.
 
 `library edit` takes `field=value` pairs (`title`, `artist`, `album`,
 `year`, `track`, `disc`), rewrites the file's tags to match, and with
-`--rename` re-derives the filename from the naming scheme.
+`--rename` re-derives the full library path from the naming scheme.
 
 Import/yt tag overrides: `--tags` takes a JSON file (`artist`, `album`, `date`,
 `label`, `genre`, `cover`, per-position `tracks`); the individual flags win over

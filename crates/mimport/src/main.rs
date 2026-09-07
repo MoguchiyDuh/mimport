@@ -401,7 +401,7 @@ fn run_library(cli: &Cli, cfg: &Config, cmd: &LibraryCmd) -> mimport_core::Resul
             let edits = library::parse_edits(fields)?;
             let track = library::get_track(&db, *id)?;
             let new_path = if *rename {
-                library::planned_rename(&track)
+                library::planned_rename(&track, &edits, &cfg.paths.library)
             } else {
                 None
             };
@@ -426,7 +426,13 @@ fn run_library(cli: &Cli, cfg: &Config, cmd: &LibraryCmd) -> mimport_core::Resul
             if !*dry_run {
                 library::rewrite_tags(Path::new(&track.path), &edits)?;
                 if let Some(np) = &new_path {
+                    if let Some(parent) = Path::new(np).parent() {
+                        std::fs::create_dir_all(parent).map_err(|e| return Error::io(parent, e))?;
+                    }
                     std::fs::rename(&track.path, np).map_err(|e| return Error::io(np, e))?;
+                    if let Some(old_parent) = Path::new(&track.path).parent() {
+                        let _ = std::fs::remove_dir(old_parent);
+                    }
                 }
                 let updated = library::edit_track(&db, *id, &edits, new_path.as_deref())?;
                 output::print(
