@@ -124,7 +124,11 @@ pub fn view_search(search: &Search, opts: SearchView) -> Search {
     let mut responses: Vec<SearchResponseItem> = Vec::with_capacity(search.responses.len());
     for r in &search.responses {
         let files: Vec<SlskdFile> = if opts.lossless_only {
-            r.files.iter().filter(|f| return is_lossless_file(f)).cloned().collect()
+            r.files
+                .iter()
+                .filter(|f| return is_lossless_file(f))
+                .cloned()
+                .collect()
         } else {
             r.files.clone()
         };
@@ -132,7 +136,11 @@ pub fn view_search(search: &Search, opts: SearchView) -> Search {
             continue;
         }
         let locked_files = if opts.lossless_only {
-            r.locked_files.iter().filter(|f| return is_lossless_file(f)).cloned().collect()
+            r.locked_files
+                .iter()
+                .filter(|f| return is_lossless_file(f))
+                .cloned()
+                .collect()
         } else {
             r.locked_files.clone()
         };
@@ -165,14 +173,11 @@ pub fn view_search(search: &Search, opts: SearchView) -> Search {
 }
 
 fn is_lossless_file(f: &SlskdFile) -> bool {
-    let by_ext = f
-        .extension
-        .as_deref()
-        .is_some_and(|e| {
-            return LOSSLESS_EXTENSIONS
-                .iter()
-                .any(|l| return l.eq_ignore_ascii_case(e));
-        });
+    let by_ext = f.extension.as_deref().is_some_and(|e| {
+        return LOSSLESS_EXTENSIONS
+            .iter()
+            .any(|l| return l.eq_ignore_ascii_case(e));
+    });
     return by_ext || (f.bit_depth.is_some() && f.sample_rate.is_some());
 }
 

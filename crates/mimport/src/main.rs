@@ -755,6 +755,7 @@ fn run_yt(cli: &Cli, cfg: &Config, cmd: &YtCmd) -> mimport_core::Result<()> {
         medium_position: final_disc,
         title: final_title,
         title_native,
+        source_url: Some(fetched.source_url.clone()),
         recording_id,
         raw_position,
         distance: 0.0,
@@ -890,6 +891,7 @@ fn run_yt_playlist(
             medium_position: track.medium_position,
             title: track.title.clone(),
             title_native: track.title_native.clone(),
+            source_url: Some(f.source_url.clone()),
             recording_id: track.recording_id.clone(),
             raw_position: track.raw_position.clone(),
             distance: 0.0,
@@ -928,11 +930,7 @@ fn run_yt_playlist(
 fn run_slskd(cli: &Cli, cfg: &Config, cmd: &SlskdCmd) -> mimport_core::Result<()> {
     let client = SlskdClient::new(&cfg.slskd)?;
     match cmd {
-        SlskdCmd::Search {
-            query,
-            fresh,
-            all,
-        } => {
+        SlskdCmd::Search { query, fresh, all } => {
             let outcome = slskd_q::search(&client, query, *fresh)?;
             let view = slskd_q::view_search(
                 &outcome.search,
