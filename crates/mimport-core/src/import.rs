@@ -51,6 +51,8 @@ pub struct MatchedTrack {
     pub title: String,
     /// Original (pre-romanization) title, set only when `title` was swapped.
     pub title_native: Option<String>,
+    /// Source page URL, set only by yt fetch so downloads can be re-traced.
+    pub source_url: Option<String>,
     pub recording_id: Option<String>,
     /// The matched track's raw (possibly non-numeric) MB track number, carried
     /// from match time so tag/filename derivation never re-looks-up by title.
@@ -303,6 +305,7 @@ pub fn match_tracks(locals: &[LocalTrack], release: &NormalizedRelease) -> Match
                 medium_position: track.medium_position,
                 title: track.title.clone(),
                 title_native: track.title_native.clone(),
+                source_url: None,
                 recording_id: track.recording_id.clone(),
                 raw_position: track.raw_position.clone(),
                 distance: d.total,
@@ -406,6 +409,7 @@ pub fn apply_force_mapping(
             medium_position: track.medium_position,
             title: track.title.clone(),
             title_native: track.title_native.clone(),
+            source_url: None,
             recording_id: track.recording_id.clone(),
             raw_position: track.raw_position.clone(),
             distance: 0.0,
@@ -857,6 +861,9 @@ fn fill_vorbis(vc: &mut VorbisComments, m: &MatchedTrack, release: &NormalizedRe
     }
     if let Some(native) = &m.title_native {
         vc.insert("ORIGINALTITLE".to_string(), native.clone());
+    }
+    if let Some(url) = &m.source_url {
+        vc.insert("SOURCEURL".to_string(), url.clone());
     }
     // release.id may be a non-mbid sentinel (yt fetch with no --release backfill)
     if looks_like_mbid(&release.id) {
