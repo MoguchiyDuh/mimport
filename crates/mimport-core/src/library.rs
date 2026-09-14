@@ -12,6 +12,7 @@ use lofty::tag::{Accessor, ItemKey, Tag};
 use rusqlite::types::Value;
 use rusqlite::{Connection, params, params_from_iter};
 use serde::Serialize;
+use unicode_normalization::UnicodeNormalization;
 
 use crate::error::{Error, Result};
 use crate::import::{ImportedFile, MatchedTrack, sanitize};
@@ -289,7 +290,7 @@ impl Clause {
         let mut ors: Vec<String> = Vec::new();
         let mut params: Vec<Value> = Vec::new();
         for col in cols {
-            let (frag, mut p) = kind_sql(col, &self.kind);
+            let (frag, mut p) = kind_sql(col, &self.kind, self.field);
             ors.push(frag);
             params.append(&mut p);
         }
@@ -308,9 +309,23 @@ impl Clause {
 }
 
 /// Builds a per-column SQL predicate for a non-fuzzy kind. Text matching is
-/// ASCII case-insensitive via `lower()`; a NULL column never matches.
-fn kind_sql(col: &str, kind: &MatchKind) -> (String, Vec<Value>) {
+/// ASCII case-insensitive via `lower()`; a NULL column never matches. Path is
+/// matched case- and byte-sensitively against both NFC and NFD normalizations,
+/// since `lower()` only folds ASCII and stored path text may not share the
+/// query's Unicode normalization form.
+fn kind_sql(col: &str, kind: &MatchKind, field: Option<Field>) -> (String, Vec<Value>) {
+    let is_path = field == Some(Field::Path);
     return match kind {
+        MatchKind::Substring(s) if is_path => (
+            format!(
+                "{col} IS NOT NULL AND ({col} LIKE '%' || ? || '%' ESCAPE '\\' OR {col} LIKE '%' || ? || '%' ESCAPE '\\')"
+            ),
+            vec![Value::Text(escape_like(&nfc(s))), Value::Text(escape_like(&nfd(s)))],
+        ),
+        MatchKind::Exact(s) if is_path => (
+            format!("{col} IS NOT NULL AND ({col} = ? OR {col} = ?)"),
+            vec![Value::Text(nfc(s)), Value::Text(nfd(s))],
+        ),
         MatchKind::Substring(s) => (
             format!("{col} IS NOT NULL AND lower({col}) LIKE '%' || lower(?) || '%' ESCAPE '\\'"),
             vec![Value::Text(escape_like(s))],
@@ -339,6 +354,14 @@ fn kind_sql(col: &str, kind: &MatchKind) -> (String, Vec<Value>) {
         }
         MatchKind::Fuzzy(_) => ("0".to_string(), Vec::new()),
     };
+}
+
+fn nfc(s: &str) -> String {
+    return s.nfc().collect();
+}
+
+fn nfd(s: &str) -> String {
+    return s.nfd().collect();
 }
 
 fn escape_like(s: &str) -> String {
@@ -385,8 +408,20 @@ fn match_field(t: &LibraryTrack, field: Field, kind: &MatchKind) -> bool {
         Field::Recording => t.recording_id.clone(),
     };
     return match text {
+        Some(v) if field == Field::Path => match_path(&v, kind),
         Some(v) => match_text(&v, kind),
         None => false,
+    };
+}
+
+/// Path matching mirrors `kind_sql`'s Path handling: case- and byte-sensitive,
+/// comparing against both NFC and NFD forms of the query.
+fn match_path(value: &str, kind: &MatchKind) -> bool {
+    return match kind {
+        MatchKind::Substring(s) => value.contains(&nfc(s)) || value.contains(&nfd(s)),
+        MatchKind::Exact(s) => value == nfc(s) || value == nfd(s),
+        MatchKind::Fuzzy(s) => text_similarity(value, s) >= FUZZY_THRESHOLD,
+        MatchKind::Range(..) => false,
     };
 }
 

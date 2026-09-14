@@ -501,13 +501,71 @@ fn run_cover(cli: &Cli, cfg: &Config, query: &[String], fetch: bool) -> mimport_
             continue;
         }
 
+        let embed_into = |ts: &[&library::LibraryTrack], cover: &mimport_core::coverart::CoverArt| {
+            let mut embedded = 0;
+            let mut failed = Vec::new();
+            for t in ts {
+                match mimport_core::coverart::embed_cover(Path::new(&t.path), cover) {
+                    Ok(()) => embedded += 1,
+                    Err(e) => {
+                        tracing::warn!("embed failed for {}: {e}", t.path);
+                        failed.push(serde_json::json!({ "path": t.path, "error": e.to_string() }));
+                    }
+                }
+            }
+            return (embedded, failed);
+        };
+
         let Some(mbid) = mbid else {
-            results.push(serde_json::json!({
-                "release": null,
-                "tracks": ts.len(),
-                "embedded": 0,
-                "reason": "no release mbid",
-            }));
+            // NULL release (e.g. YT imports): no CAA lookup is possible, but the
+            // iTunes fallback keys off artist/album, which we have. Sub-group by
+            // (artist, album) so distinct albums sharing NULL don't cross-embed.
+            if !client.itunes_fallback_enabled() {
+                results.push(serde_json::json!({
+                    "release": null,
+                    "tracks": ts.len(),
+                    "embedded": 0,
+                    "reason": "no release mbid",
+                }));
+                continue;
+            }
+            let mut groups: BTreeMap<(&str, &str), Vec<&library::LibraryTrack>> = BTreeMap::new();
+            for t in ts {
+                groups
+                    .entry((t.artist.as_str(), t.album.as_str()))
+                    .or_default()
+                    .push(*t);
+            }
+            for ((artist, album), gts) in &groups {
+                match client.fetch_itunes(artist, album) {
+                    Ok(Some(cover)) => {
+                        let (embedded, failed) = embed_into(gts, &cover);
+                        results.push(serde_json::json!({
+                            "release": null,
+                            "album": album,
+                            "tracks": gts.len(),
+                            "source": "itunes",
+                            "embedded": embedded,
+                            "failed": failed,
+                        }));
+                    }
+                    Ok(None) => results.push(serde_json::json!({
+                        "release": null,
+                        "album": album,
+                        "tracks": gts.len(),
+                        "embedded": 0,
+                        "reason": "no cover in itunes",
+                    })),
+                    Err(e) => results.push(serde_json::json!({
+                        "release": null,
+                        "album": album,
+                        "tracks": gts.len(),
+                        "embedded": 0,
+                        "reason": "fetch error",
+                        "failed": [{"error": e.to_string()}],
+                    })),
+                }
+            }
             continue;
         };
         let mut fetch_error: Option<String> = None;
@@ -566,17 +624,7 @@ fn run_cover(cli: &Cli, cfg: &Config, query: &[String], fetch: bool) -> mimport_
             }));
             continue;
         };
-        let mut embedded = 0;
-        let mut failed = Vec::new();
-        for t in ts {
-            match mimport_core::coverart::embed_cover(Path::new(&t.path), &cover) {
-                Ok(()) => embedded += 1,
-                Err(e) => {
-                    tracing::warn!("embed failed for {}: {e}", t.path);
-                    failed.push(serde_json::json!({ "path": t.path, "error": e.to_string() }));
-                }
-            }
-        }
+        let (embedded, failed) = embed_into(ts, &cover);
         results.push(serde_json::json!({
             "release": mbid,
             "tracks": ts.len(),

@@ -12,6 +12,7 @@ use lofty::probe::read_from_path;
 use lofty::tag::{Accessor, ItemKey, Tag, TagExt, TagType};
 use pathfinding::prelude::{Matrix, kuhn_munkres_min};
 use serde::{Deserialize, Serialize};
+use unicode_normalization::UnicodeNormalization;
 
 use crate::audio::is_audio;
 use crate::coverart::CoverArt;
@@ -877,7 +878,7 @@ fn looks_like_mbid(s: &str) -> bool {
 
 pub fn sanitize(s: &str) -> String {
     let cleaned: String = s
-        .chars()
+        .nfc()
         .map(|c| return if "/\\:*?\"<>|".contains(c) { '_' } else { c })
         .collect();
     return cleaned.trim().trim_end_matches('.').to_string();

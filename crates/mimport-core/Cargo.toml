@@ -18,3 +18,4 @@ pathfinding.workspace = true
 tracing.workspace = true
 thiserror.workspace = true
 image.workspace = true
+unicode-normalization.workspace = true
