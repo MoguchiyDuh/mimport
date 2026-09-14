@@ -65,13 +65,28 @@ pub fn from_local_file(path: &Path) -> Result<CoverArt> {
 fn norm_title(s: &str) -> String {
     return s
         .chars()
-        .filter_map(|c| {
-            if c.is_ascii_alphanumeric() {
-                return Some(c.to_ascii_lowercase());
-            }
-            return None;
-        })
+        .filter(|c| return c.is_alphanumeric())
+        .flat_map(|c| return c.to_lowercase())
         .collect();
+}
+
+/// iTunes tokenizes the term as required words, so a multi-title release
+/// (`A / B`) or an appended `- EP`/`- Single` suffix drives the result count
+/// to zero. Keep only the first title and drop the format suffix.
+fn itunes_album_term(album: &str) -> String {
+    let head = album.split(" / ").next().unwrap_or(album).trim();
+    let head = head
+        .strip_suffix(" - EP")
+        .or_else(|| return head.strip_suffix(" - Single"))
+        .unwrap_or(head);
+    return head.trim().to_string();
+}
+
+/// iTunes stores collab artists with `&`; libraries commonly use a standalone
+/// `x`/`×`. Rewrite only whitespace-delimited single-char separators so an
+/// intra-word `x` is left alone.
+fn itunes_artist_term(artist: &str) -> String {
+    return artist.replace(" x ", " & ").replace(" × ", " & ");
 }
 
 pub struct CoverArtClient {
@@ -182,20 +197,25 @@ impl CoverArtClient {
         artist: &str,
         album: &str,
     ) -> Result<Option<CoverArt>> {
-        let key = format!("{release_mbid}.fb");
-        match self.read_cache(&key) {
-            Cached::Positive(c) => return Ok(Some(c)),
-            Cached::Negative => return Ok(None),
-            Cached::Miss => {}
-        }
+        // An empty release id (synthetic YT release) has no CAA entry; the
+        // request would be a malformed `release//front-500`, so skip to iTunes.
+        if !release_mbid.is_empty() {
+            let key = format!("{release_mbid}.fb");
+            match self.read_cache(&key) {
+                Cached::Positive(c) => return Ok(Some(c)),
+                Cached::Negative => return Ok(None),
+                Cached::Miss => {}
+            }
 
-        match self.fetch_caa(&format!("release/{release_mbid}"), release_mbid) {
-            Ok(Some(c)) => return Ok(Some(c)),
-            Ok(None) => {}
-            Err(e) => {
-                tracing::warn!("CAA fetch failed for {release_mbid}: {e}; trying iTunes");
+            match self.fetch_caa(&format!("release/{release_mbid}"), release_mbid) {
+                Ok(Some(c)) => return Ok(Some(c)),
+                Ok(None) => {}
+                Err(e) => {
+                    tracing::warn!("CAA fetch failed for {release_mbid}: {e}; trying iTunes");
+                }
             }
         }
+        let key = format!("{release_mbid}.fb");
 
         match self.fetch_itunes(artist, album)? {
             Some(c) => {
@@ -221,12 +241,13 @@ impl CoverArtClient {
             return Ok(None);
         }
 
+        let term = format!("{} {}", itunes_artist_term(artist), itunes_album_term(album));
         let search: serde_json::Value = self
             .http
             .get(format!("{ITUNES_BASE_URL}/search"))
             .header(reqwest::header::USER_AGENT, &self.user_agent)
             .query(&[
-                ("term", format!("{artist} {album}")),
+                ("term", term.clone()),
                 ("entity", "album".to_string()),
                 ("country", self.itunes_country.clone()),
                 ("limit", "5".to_string()),
@@ -252,6 +273,7 @@ impl CoverArtClient {
             .cloned()
             .unwrap_or_default();
         let album_norm = norm_title(album);
+        let artist_norm = norm_title(&itunes_artist_term(artist));
         let mut art_url: Option<String> = None;
         for res in &results {
             let name = res
@@ -259,7 +281,10 @@ impl CoverArtClient {
                 .and_then(|v| return v.as_str())
                 .unwrap_or_default();
             let norm = norm_title(name);
-            if norm.contains(&album_norm) || album_norm.contains(&norm) {
+            if !album_norm.is_empty()
+                && !norm.is_empty()
+                && (norm.contains(&album_norm) || album_norm.contains(&norm))
+            {
                 art_url = res
                     .get("artworkUrl100")
                     .and_then(|v| return v.as_str())
@@ -267,9 +292,23 @@ impl CoverArtClient {
                 break;
             }
         }
+        // No collection-name match (common when the storefront localizes the
+        // title): fall back to the first result only when its artist plausibly
+        // matches, so a noisy query can't embed an unrelated album's cover.
         if art_url.is_none() {
             art_url = results
                 .first()
+                .filter(|r| {
+                    let a = norm_title(
+                        r.get("artistName")
+                            .and_then(|v| return v.as_str())
+                            .unwrap_or_default(),
+                    );
+                    return artist_norm.is_empty()
+                        || a.is_empty()
+                        || a.contains(&artist_norm)
+                        || artist_norm.contains(&a);
+                })
                 .and_then(|r| return r.get("artworkUrl100"))
                 .and_then(|v| return v.as_str())
                 .map(|v| return v.to_string());
