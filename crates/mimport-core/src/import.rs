@@ -9,7 +9,7 @@ use lofty::flac::FlacFile;
 use lofty::ogg::{OggPictureStorage, VorbisComments};
 use lofty::picture::{MimeType, Picture, PictureType};
 use lofty::probe::read_from_path;
-use lofty::tag::{Accessor, ItemKey, Tag, TagExt, TagType};
+use lofty::tag::{Accessor, ItemKey, ItemValue, Tag, TagExt, TagItem, TagType};
 use pathfinding::prelude::{Matrix, kuhn_munkres_min};
 use serde::{Deserialize, Serialize};
 use unicode_normalization::UnicodeNormalization;
@@ -674,10 +674,20 @@ fn write_tags(
     tag.set_album(release.title.clone());
     if let Some(artist) = &release.artist_credit {
         tag.set_artist(artist.clone());
-        // Keep grouping fields in sync with the resolved artist for the same
-        // reason fill_vorbis overwrites ALBUMARTIST/ARTISTS.
-        let _ = tag.insert_text(ItemKey::AlbumArtist, artist.clone());
+        // Track artists stay in sync with the resolved artist for the same
+        // reason fill_vorbis overwrites ARTISTS.
         let _ = tag.insert_text(ItemKey::TrackArtists, artist.clone());
+    }
+    // ALBUMARTIST may differ from ARTIST (Various-Artists compilations).
+    if let Some(album_artist) = release
+        .album_artist
+        .as_ref()
+        .or(release.artist_credit.as_ref())
+    {
+        let _ = tag.insert_text(ItemKey::AlbumArtist, album_artist.clone());
+    }
+    if release.compilation {
+        let _ = tag.insert_text(ItemKey::FlagCompilation, "1".to_string());
     }
     if let Some(pos) = m.position {
         tag.set_track(pos);
@@ -699,8 +709,8 @@ fn write_tags(
     if let Some(label) = &release.label {
         let _ = tag.insert_text(ItemKey::Label, label.clone());
     }
-    if let Some(genre) = &release.genre {
-        tag.set_genre(genre.clone());
+    for genre in &release.genres {
+        tag.push(TagItem::new(ItemKey::Genre, ItemValue::Text(genre.clone())));
     }
     if let Some(id) = &m.recording_id {
         let _ = tag.insert_text(ItemKey::MusicBrainzRecordingId, id.clone());
@@ -820,13 +830,24 @@ fn fill_vorbis(vc: &mut VorbisComments, m: &MatchedTrack, release: &NormalizedRe
     vc.set_album(release.title.clone());
     if let Some(artist) = &release.artist_credit {
         vc.set_artist(artist.clone());
-        // Source rips often carry stale artist-grouping fields in the native
-        // script (ALBUMARTIST, the space-variant "ALBUM ARTIST", ARTISTS);
-        // overwrite every spelling so players don't surface CJK the override
-        // just removed from ARTIST.
-        vc.insert("ALBUMARTIST".to_string(), artist.clone());
-        vc.insert("ALBUM ARTIST".to_string(), artist.clone());
+        // Track artists stay in sync with the resolved artist so players don't
+        // surface stale grouping values the override just removed from ARTIST.
         vc.insert("ARTISTS".to_string(), artist.clone());
+    }
+    // ALBUMARTIST may differ from ARTIST (Various-Artists compilations). Write
+    // every spelling, including the lowercase `album_artist` some players read,
+    // so they don't disagree.
+    if let Some(album_artist) = release
+        .album_artist
+        .as_ref()
+        .or(release.artist_credit.as_ref())
+    {
+        vc.insert("ALBUMARTIST".to_string(), album_artist.clone());
+        vc.insert("album_artist".to_string(), album_artist.clone());
+        vc.insert("ALBUM ARTIST".to_string(), album_artist.clone());
+    }
+    if release.compilation {
+        vc.insert("COMPILATION".to_string(), "1".to_string());
     }
     if let Some(pos) = m.position {
         vc.set_track(pos);
@@ -848,8 +869,13 @@ fn fill_vorbis(vc: &mut VorbisComments, m: &MatchedTrack, release: &NormalizedRe
     if let Some(label) = &release.label {
         vc.insert("LABEL".to_string(), label.clone());
     }
-    if let Some(genre) = &release.genre {
-        vc.set_genre(genre.clone());
+    if !release.genres.is_empty() {
+        // Drop any source genres first so repeated GENRE fields are exactly
+        // `release.genres`, not a merge with the rip's existing tags.
+        drop(vc.remove("GENRE"));
+        for genre in &release.genres {
+            vc.push("GENRE".to_string(), genre.clone());
+        }
     }
     if let Some(id) = &m.recording_id {
         vc.insert("MUSICBRAINZ_TRACKID".to_string(), id.clone());

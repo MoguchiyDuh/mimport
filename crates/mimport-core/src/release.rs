@@ -26,9 +26,15 @@ pub struct NormalizedRelease {
     pub title_native: Option<String>,
     /// Original (pre-romanization) artist credit, set only when `artist_credit` was swapped.
     pub artist_credit_native: Option<String>,
-    /// Manual-only field; MB isn't queried for genre, so this is `None` unless
-    /// a `TagOverrides.genre` was applied.
-    pub genre: Option<String>,
+    /// Album-level artist (ALBUMARTIST). Falls back to `artist_credit` at write
+    /// time when `None`; set explicitly for Various-Artists compilations, where
+    /// the album artist differs from each track's ARTIST.
+    pub album_artist: Option<String>,
+    /// Marks the release a compilation (writes COMPILATION=1).
+    pub compilation: bool,
+    /// Genre tags, in order; written as repeated GENRE fields. Empty unless a
+    /// manual override supplied them (MB isn't queried for genre).
+    pub genres: Vec<String>,
     pub tracks: Vec<NormalizedTrack>,
 }
 
@@ -141,7 +147,9 @@ impl From<MbRelease> for NormalizedRelease {
             release_group_id,
             title_native: None,
             artist_credit_native: None,
-            genre: None,
+            album_artist: None,
+            compilation: false,
+            genres: Vec::new(),
             tracks,
         };
     }
@@ -200,7 +208,9 @@ impl From<LidarrRelease> for NormalizedRelease {
             release_group_id: None,
             title_native: None,
             artist_credit_native: None,
-            genre: None,
+            album_artist: None,
+            compilation: false,
+            genres: Vec::new(),
             track_count: r.track_count,
             date,
             tracks,

@@ -44,8 +44,9 @@ pub enum Command {
         /// {"<file path>": <track position>} mapping that bypasses Munkres matching entirely
         #[arg(long)]
         force: Option<PathBuf>,
-        /// JSON file with manual tag overrides: artist, album, date, label, genre, cover
-        /// (image path), tracks ({"<position>": "<title>"}); wins over MB, loses to flags below
+        /// JSON file with manual tag overrides: artist, album, album_artist,
+        /// compilation, date, label, genre/genres, cover (image path), tracks
+        /// ({"<position>": "<title>"}); wins over MB, loses to flags below
         #[arg(long)]
         tags: Option<PathBuf>,
         #[arg(long)]
@@ -56,8 +57,15 @@ pub enum Command {
         date: Option<String>,
         #[arg(long)]
         label: Option<String>,
+        /// album artist; defaults to --artist when unset (Various-Artists compilations)
         #[arg(long)]
-        genre: Option<String>,
+        album_artist: Option<String>,
+        /// write COMPILATION=1
+        #[arg(long)]
+        compilation: bool,
+        /// genre tag; repeatable for multiple (e.g. --genre Nightcore --genre Pop)
+        #[arg(long)]
+        genre: Vec<String>,
         /// local image file to embed as cover art instead of fetching from Cover Art Archive
         #[arg(long)]
         cover: Option<PathBuf>,
@@ -190,6 +198,15 @@ pub enum YtCmd {
         disc: Option<u32>,
         #[arg(long)]
         year: Option<String>,
+        /// album artist; defaults to --artist when unset (Various-Artists compilations)
+        #[arg(long)]
+        album_artist: Option<String>,
+        /// write COMPILATION=1
+        #[arg(long)]
+        compilation: bool,
+        /// genre tag; repeatable for multiple (e.g. --genre Nightcore --genre Pop)
+        #[arg(long)]
+        genre: Vec<String>,
         /// MB release mbid to backfill metadata/MBIDs from; requires --track
         #[arg(long)]
         release: Option<String>,
@@ -199,13 +216,13 @@ pub enum YtCmd {
             conflicts_with_all = ["title", "artist", "album", "track", "disc", "year"]
         )]
         playlist: bool,
-        /// JSON manual tag overrides (same schema as `import --tags`); applied
-        /// against the --release metadata, so it needs --release to be useful
-        #[arg(long, requires = "release")]
+        /// JSON manual tag overrides (same schema as `import --tags`); applies
+        /// on top of --release when given, or standalone in single-video mode
+        #[arg(long)]
         tags: Option<PathBuf>,
         /// keep native (CJK/etc) script for any field with no romanization alias
-        /// or manual override, instead of blocking; needs --release
-        #[arg(long, requires = "release")]
+        /// or manual override, instead of blocking; only meaningful with --release
+        #[arg(long)]
         allow_native: bool,
         /// Netscape-format cookie jar passed to yt-dlp --cookies; overrides
         /// [yt].cookies from config

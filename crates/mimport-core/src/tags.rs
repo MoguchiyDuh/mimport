@@ -1,7 +1,9 @@
 //! Manual tag overrides + MB-alias romanization, applied to a `NormalizedRelease`
 //! before matching/writing. Everything MB can set on a release/track (barring
 //! mbids and cover art fetch, which have their own dedicated paths) is
-//! overridable here: artist, album, date, label, genre, and per-track title.
+//! overridable here: artist, album artist, album, date, label, genres, and
+//! per-track title. `compilation` marks the release as a Various-Artists
+//! compilation.
 //!
 //! Resolution order per field: manual override (unconditional) > MB
 //! romanization alias (only if the field is non-Latin) > left as-is. A
@@ -23,7 +25,16 @@ pub struct TagOverrides {
     pub album: Option<String>,
     pub date: Option<String>,
     pub label: Option<String>,
+    /// Album artist (ALBUMARTIST). Falls back to `artist` when unset; use for
+    /// Various-Artists compilations.
+    pub album_artist: Option<String>,
+    /// Mark the release a compilation (writes COMPILATION=1).
+    pub compilation: Option<bool>,
+    /// Single genre; kept for back-compat. Merged ahead of `genres`.
     pub genre: Option<String>,
+    /// Multiple genre tags, in order.
+    #[serde(default)]
+    pub genres: Vec<String>,
     pub cover: Option<std::path::PathBuf>,
     /// Manual track titles keyed `"<disc>:<position>"` or plain `"<position>"`.
     /// A plain position applies only when unique across the release; on
@@ -38,7 +49,9 @@ pub struct FlagOverrides<'a> {
     pub album: Option<String>,
     pub date: Option<String>,
     pub label: Option<String>,
-    pub genre: Option<String>,
+    pub album_artist: Option<String>,
+    pub compilation: Option<bool>,
+    pub genres: Vec<String>,
     pub cover: Option<std::path::PathBuf>,
     pub track_titles: &'a [String],
 }
@@ -64,8 +77,14 @@ impl TagOverrides {
         if flags.label.is_some() {
             self.label = flags.label;
         }
-        if flags.genre.is_some() {
-            self.genre = flags.genre;
+        if flags.album_artist.is_some() {
+            self.album_artist = flags.album_artist;
+        }
+        if flags.compilation.is_some() {
+            self.compilation = flags.compilation;
+        }
+        if !flags.genres.is_empty() {
+            self.genres = flags.genres;
         }
         if flags.cover.is_some() {
             self.cover = flags.cover;
@@ -84,6 +103,18 @@ impl TagOverrides {
             self.tracks.insert(key, title.to_string());
         }
         return Ok(());
+    }
+
+    /// `genre` + `genres`, trimmed, de-duplicated, in that order.
+    pub fn merged_genres(&self) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        for g in self.genre.iter().chain(self.genres.iter()) {
+            let g = g.trim();
+            if !g.is_empty() && !out.iter().any(|x| return x == g) {
+                out.push(g.to_string());
+            }
+        }
+        return out;
     }
 }
 
@@ -133,7 +164,12 @@ pub fn resolve(
         .label
         .clone()
         .or_else(|| return release.label.clone());
-    release.genre = overrides.genre.clone();
+    release.album_artist = overrides.album_artist.clone();
+    release.compilation = overrides.compilation.unwrap_or(release.compilation);
+    let genres = overrides.merged_genres();
+    if !genres.is_empty() {
+        release.genres = genres;
+    }
     resolve_tracks(client, release, overrides, &mut unresolved);
 
     return unresolved;
