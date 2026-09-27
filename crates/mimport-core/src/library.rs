@@ -825,7 +825,7 @@ pub fn planned_rename(
             .iter()
             .all(|p| return p.len() == 2 && p.bytes().all(|b| return b.is_ascii_digit()));
     let new_head = match track_num {
-        Some(n) if n >= 1 && n <= 99 => {
+        Some(n) if (1..=99).contains(&n) => {
             if current_is_multi {
                 format!("{disc:02}-{n:02}")
             } else {

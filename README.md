@@ -84,7 +84,8 @@ mimport slskd browse <username> [<directory>]
 mimport import <job-id|path|title> --release <mbid> [--force <mapping.json>]
                                     [--tags <overrides.json>]
                                     [--artist <n>] [--album <n>] [--date <d>]
-                                    [--label <n>] [--genre <n>]
+                                    [--label <n>] [--album-artist <n>] [--compilation]
+                                    [--genre <n>]...
                                     [--track-title <[disc:]pos>=<title>]...
                                     [--cover <img> | --cover-art]
                                     [--allow-native] [--move] [--allow-partial]
@@ -98,6 +99,7 @@ mimport cover [<query>...] [--fetch]
 
 mimport yt fetch <url> [--title <t>] [--artist <a>] [--album <a>]
                       [--track <n>] [--disc <n>] [--year <y>]
+                      [--album-artist <a>] [--compilation] [--genre <g>]...
                       [--release <mbid> --track <n>] [--playlist]
                       [--tags <overrides.json>] [--allow-native]
                       [--cookies <jar>] [--cookies-from-browser <name>]
@@ -116,12 +118,16 @@ resolve against the full, unfiltered search.
 `year`, `track`, `disc`), rewrites the file's tags to match, and with
 `--rename` re-derives the full library path from the naming scheme.
 
-Import/yt tag overrides: `--tags` takes a JSON file (`artist`, `album`, `date`,
-`label`, `genre`, `cover`, per-position `tracks`); the individual flags win over
-the file for the same field. Non-Latin (CJK/Hangul) fields are romanized via
-MusicBrainz aliases; without a usable alias or manual override the import fails
-unless `--allow-native` is passed (on yt, `--tags`/`--allow-native` require
-`--release`).
+Import/yt tag overrides: `--tags` takes a JSON file (`artist`, `album`,
+`album_artist`, `compilation`, `date`, `label`, `genre`/`genres`, `cover`,
+per-position `tracks`); the individual flags win over the file for the same
+field. `--album-artist` sets ALBUMARTIST independently of ARTIST and
+`--compilation` writes COMPILATION=1, so Various-Artists compilations group as
+one album; `--genre` is repeatable and `genres`/`genre` in `--tags` are merged.
+Non-Latin (CJK/Hangul) fields are romanized via MusicBrainz aliases; without a
+usable alias or manual override the import fails unless `--allow-native` is
+passed (only meaningful with `--release`; single-video `yt fetch` applies
+`--tags` standalone when no `--release` is given).
 
 ## Config
 

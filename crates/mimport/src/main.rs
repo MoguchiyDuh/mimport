@@ -56,6 +56,8 @@ fn run(cli: &Cli) -> mimport_core::Result<()> {
             album,
             date,
             label,
+            album_artist,
+            compilation,
             genre,
             cover,
             cover_art,
@@ -77,7 +79,9 @@ fn run(cli: &Cli) -> mimport_core::Result<()> {
                 album: album.clone(),
                 date: date.clone(),
                 label: label.clone(),
-                genre: genre.clone(),
+                album_artist: album_artist.clone(),
+                compilation: *compilation,
+                genres: genre.clone(),
                 cover: cover.clone(),
                 cover_art: *cover_art,
                 track_title,
@@ -238,7 +242,9 @@ struct ImportFlags<'a> {
     album: Option<String>,
     date: Option<String>,
     label: Option<String>,
-    genre: Option<String>,
+    album_artist: Option<String>,
+    compilation: bool,
+    genres: Vec<String>,
     cover: Option<std::path::PathBuf>,
     cover_art: bool,
     track_title: &'a [String],
@@ -282,7 +288,9 @@ fn run_import(
         album: flags.album,
         date: flags.date,
         label: flags.label,
-        genre: flags.genre,
+        album_artist: flags.album_artist,
+        compilation: Some(flags.compilation).filter(|c| return *c),
+        genres: flags.genres,
         cover: flags.cover.clone(),
         track_titles: flags.track_title,
     })?;
@@ -646,6 +654,9 @@ fn run_yt(cli: &Cli, cfg: &Config, cmd: &YtCmd) -> mimport_core::Result<()> {
         track,
         disc,
         year,
+        album_artist,
+        compilation,
+        genre,
         release,
         playlist,
         tags,
@@ -670,6 +681,9 @@ fn run_yt(cli: &Cli, cfg: &Config, cmd: &YtCmd) -> mimport_core::Result<()> {
                 release: release.as_deref(),
                 tags: tags.as_deref(),
                 allow_native: *allow_native,
+                album_artist: album_artist.clone(),
+                compilation: *compilation,
+                genres: genre.clone(),
                 dry_run: *dry_run,
                 yt: yt_cfg,
             },
@@ -679,6 +693,24 @@ fn run_yt(cli: &Cli, cfg: &Config, cmd: &YtCmd) -> mimport_core::Result<()> {
     let fetched = yt::fetch(&yt_cfg, url, &cfg.paths.staging, false)?;
     let fetched = fetched.into_iter().next().ok_or(Error::YtEmptyFetch)?;
 
+    // Manual overrides apply in both modes: against the MB release when
+    // --release is given, or straight onto the synthetic release otherwise.
+    let mut overrides = match tags {
+        Some(path) => tags::TagOverrides::load(path)?,
+        None => tags::TagOverrides::default(),
+    };
+    overrides.apply_flag_overrides(tags::FlagOverrides {
+        artist: artist.clone(),
+        album: album.clone(),
+        date: year.clone(),
+        label: None,
+        album_artist: album_artist.clone(),
+        compilation: Some(*compilation).filter(|c| return *c),
+        genres: genre.clone(),
+        cover: None,
+        track_titles: &[],
+    })?;
+
     let (norm_release, backfill) = match release {
         Some(mbid) => {
             let position = track.ok_or(Error::YtReleaseNeedsTrack)?;
@@ -686,20 +718,6 @@ fn run_yt(cli: &Cli, cfg: &Config, cmd: &YtCmd) -> mimport_core::Result<()> {
             let raw = mb_q::release_with_tracks(&mb_client, mbid)?;
             let mut norm = NormalizedRelease::from(raw);
 
-            // --tags/--allow-native only reach here with --release (clap `requires`).
-            let mut overrides = match tags {
-                Some(path) => tags::TagOverrides::load(path)?,
-                None => tags::TagOverrides::default(),
-            };
-            overrides.apply_flag_overrides(tags::FlagOverrides {
-                artist: artist.clone(),
-                album: album.clone(),
-                date: year.clone(),
-                label: None,
-                genre: None,
-                cover: None,
-                track_titles: &[],
-            })?;
             let unresolved = tags::resolve(&mb_client, &mut norm, &overrides);
             if !unresolved.is_empty() && !*allow_native {
                 return Err(Error::UnresolvedTitles(tags::format_unresolved(
@@ -746,22 +764,25 @@ fn run_yt(cli: &Cli, cfg: &Config, cmd: &YtCmd) -> mimport_core::Result<()> {
         None => {
             let synthetic = NormalizedRelease {
                 id: String::new(),
-                title: album
+                title: overrides
+                    .album
                     .clone()
                     .unwrap_or_else(|| return "Unknown Album".to_string()),
                 status: None,
                 country: None,
                 disambiguation: None,
-                label: None,
+                label: overrides.label.clone(),
                 formats: vec!["Opus".to_string()],
                 track_count: 0,
-                date: year.clone(),
-                artist_credit: artist.clone(),
+                date: overrides.date.clone(),
+                artist_credit: overrides.artist.clone(),
                 artist_credit_parts: Vec::new(),
                 release_group_id: None,
                 title_native: None,
                 artist_credit_native: None,
-                genre: None,
+                album_artist: overrides.album_artist.clone(),
+                compilation: overrides.compilation.unwrap_or(false),
+                genres: overrides.merged_genres(),
                 tracks: Vec::new(),
             };
             (synthetic, None)
@@ -847,6 +868,9 @@ struct YtPlaylistFlags<'a> {
     release: Option<&'a str>,
     tags: Option<&'a Path>,
     allow_native: bool,
+    album_artist: Option<String>,
+    compilation: bool,
+    genres: Vec<String>,
     dry_run: bool,
     yt: YtConfig,
 }
@@ -873,7 +897,9 @@ fn run_yt_playlist(
         album: None,
         date: None,
         label: None,
-        genre: None,
+        album_artist: flags.album_artist,
+        compilation: Some(flags.compilation).filter(|c| return *c),
+        genres: flags.genres,
         cover: None,
         track_titles: &[],
     })?;
@@ -891,10 +917,29 @@ fn run_yt_playlist(
         None => None,
     };
 
-    // yt is single-disc, so playlist_index maps straight onto track.position.
+    // A YouTube playlist is one continuous running order. For single-disc
+    // releases that maps straight onto track.position (which also keeps
+    // non-contiguous vinyl numbering working); for multi-disc releases, whose
+    // per-medium positions reset each disc, map playlist_index onto the
+    // release's global (disc, position) running order instead.
     // Entries yt-dlp skipped (--ignore-errors) simply don't appear in `fetched`;
     // a fetched entry whose index has no release track is warned and skipped
     // rather than aborting the whole import.
+    let multi_disc = release
+        .tracks
+        .iter()
+        .map(|t| return t.medium_position.unwrap_or(1))
+        .collect::<HashSet<u32>>()
+        .len()
+        > 1;
+    let mut global_order: Vec<&NormalizedTrack> = release.tracks.iter().collect();
+    global_order.sort_by_key(|t| {
+        return (
+            t.medium_position.unwrap_or(1),
+            t.position.unwrap_or(u32::MAX),
+        );
+    });
+
     let mut matched: Vec<import::MatchedTrack> = Vec::new();
     let mut skipped: Vec<u32> = Vec::new();
     let mut claimed: HashSet<u32> = HashSet::new();
@@ -918,11 +963,17 @@ fn run_yt_playlist(
             skipped.push(position);
             continue;
         }
-        let track = match release
-            .tracks
-            .iter()
-            .find(|t| return t.position == Some(position))
-        {
+        let track = if multi_disc {
+            position
+                .checked_sub(1)
+                .and_then(|i| return global_order.get(i as usize).copied())
+        } else {
+            release
+                .tracks
+                .iter()
+                .find(|t| return t.position == Some(position))
+        };
+        let track = match track {
             Some(t) => t,
             None => {
                 tracing::warn!(
