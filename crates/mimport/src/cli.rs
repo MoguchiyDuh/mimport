@@ -149,6 +149,13 @@ pub enum LibraryCmd {
         #[arg(trailing_var_arg = true)]
         query: Vec<String>,
     },
+    /// Drops index rows whose file no longer exists on disk (deleted or moved
+    /// outside mimport). Index-only — no library scan, no file I/O beyond an
+    /// existence check per row.
+    Prune {
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 
 #[derive(Subcommand)]

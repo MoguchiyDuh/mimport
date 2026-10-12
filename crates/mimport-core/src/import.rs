@@ -674,9 +674,6 @@ fn write_tags(
     tag.set_album(release.title.clone());
     if let Some(artist) = &release.artist_credit {
         tag.set_artist(artist.clone());
-        // Track artists stay in sync with the resolved artist for the same
-        // reason fill_vorbis overwrites ARTISTS.
-        let _ = tag.insert_text(ItemKey::TrackArtists, artist.clone());
     }
     // ALBUMARTIST may differ from ARTIST (Various-Artists compilations).
     if let Some(album_artist) = release
@@ -830,21 +827,14 @@ fn fill_vorbis(vc: &mut VorbisComments, m: &MatchedTrack, release: &NormalizedRe
     vc.set_album(release.title.clone());
     if let Some(artist) = &release.artist_credit {
         vc.set_artist(artist.clone());
-        // Track artists stay in sync with the resolved artist so players don't
-        // surface stale grouping values the override just removed from ARTIST.
-        vc.insert("ARTISTS".to_string(), artist.clone());
     }
-    // ALBUMARTIST may differ from ARTIST (Various-Artists compilations). Write
-    // every spelling, including the lowercase `album_artist` some players read,
-    // so they don't disagree.
+    // ALBUMARTIST may differ from ARTIST (Various-Artists compilations).
     if let Some(album_artist) = release
         .album_artist
         .as_ref()
         .or(release.artist_credit.as_ref())
     {
         vc.insert("ALBUMARTIST".to_string(), album_artist.clone());
-        vc.insert("album_artist".to_string(), album_artist.clone());
-        vc.insert("ALBUM ARTIST".to_string(), album_artist.clone());
     }
     if release.compilation {
         vc.insert("COMPILATION".to_string(), "1".to_string());

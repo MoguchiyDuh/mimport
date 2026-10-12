@@ -475,6 +475,18 @@ fn run_library(cli: &Cli, cfg: &Config, cmd: &LibraryCmd) -> mimport_core::Resul
                 cli.json,
             );
         }
+        LibraryCmd::Prune { dry_run } => {
+            let removed = if *dry_run {
+                library::missing_tracks(&db)?
+            } else {
+                library::prune_missing(&db)?
+            };
+            let count = removed.len();
+            output::print(
+                &serde_json::json!({"removed": removed, "count": count, "dry_run": *dry_run}),
+                cli.json,
+            );
+        }
     }
     return Ok(());
 }

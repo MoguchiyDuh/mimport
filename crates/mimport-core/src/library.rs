@@ -180,7 +180,35 @@ pub fn list_tracks(conn: &Connection, query: &[Clause]) -> Result<Vec<LibraryTra
     if !fuzzy.is_empty() {
         rows.retain(|t| return fuzzy.iter().all(|c| return c.matches(t)));
     }
+    let total = rows.len();
+    rows.retain(|t| return Path::new(&t.path).exists());
+    if rows.len() < total {
+        tracing::warn!(
+            "{} index row(s) reference missing files and were hidden; run `mimport library prune` to drop them",
+            total - rows.len()
+        );
+    }
     return Ok(rows);
+}
+
+/// Index rows whose underlying file no longer exists on disk, `path`-ordered.
+pub fn missing_tracks(conn: &Connection) -> Result<Vec<LibraryTrack>> {
+    let mut stmt = conn.prepare("SELECT * FROM library_tracks ORDER BY lower(path)")?;
+    let rows = stmt
+        .query_map([], row_to_track)?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    return Ok(rows
+        .into_iter()
+        .filter(|t| return !Path::new(&t.path).exists())
+        .collect());
+}
+
+/// Deletes every index row whose file is gone; returns the rows removed.
+pub fn prune_missing(conn: &Connection) -> Result<Vec<LibraryTrack>> {
+    let missing = missing_tracks(conn)?;
+    let ids: Vec<i64> = missing.iter().map(|t| return t.id).collect();
+    remove_tracks(conn, &ids)?;
+    return Ok(missing);
 }
 
 fn row_to_track(row: &rusqlite::Row) -> rusqlite::Result<LibraryTrack> {
