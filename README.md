@@ -7,6 +7,23 @@ YouTube), post-process tags, and import correctly-tagged files into the library.
 The job ends at a correctly tagged, correctly placed file on disk. Navidrome refresh and
 listening are out of scope.
 
+The myvps deployment serves the library with Navidrome. Ops rules:
+
+- **Never restart or stop the `media-navidrome-1` container** to pick up file
+  changes. Navidrome watches the library and scans on its own; for anything it
+  missed, run a scan in place: `docker exec media-navidrome-1 /app/navidrome
+  scan --full` (full scan re-probes every file; plain scans only touch folders
+  whose hash changed).
+- The library is **Opus-only** since 2026-10-12 (`[quality] codec = "opus"`):
+  every import transcodes lossless sources to Opus 160k and drops the source.
+  Lossy sources are never touched.
+- YouTube/playlist sync convention: track numbers equal the playlist position
+  (`yt fetch --track <n> --album <playlist name> --album-artist "Various
+  Artists" --compilation --genre Vocaloid`). When a playlist gains a track
+  mid-order, renumber the following files' `track` tag and filename, then run a
+  full scan. Vorbis tag keys are case-sensitive — mimport writes `track`; never
+  write `TRACKNUMBER` alongside it.
+
 ## Pipeline
 
 Each stage is a separate, explicit command:
