@@ -907,5 +907,9 @@ pub fn sanitize(s: &str) -> String {
         .nfc()
         .map(|c| return if "/\\:*?\"<>|".contains(c) { '_' } else { c })
         .collect();
-    return cleaned.trim().trim_end_matches('.').to_string();
+    return cleaned
+        .trim()
+        .trim_start_matches('.')
+        .trim_end_matches('.')
+        .to_string();
 }
