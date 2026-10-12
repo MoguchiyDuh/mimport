@@ -152,14 +152,14 @@ pub fn downsample(path: &Path, target_rate: u32, target_depth: u16) -> Result<()
         }
     };
 
-    let tmp = temp_sibling(path);
+    let tmp = temp_sibling(path, "flac");
     let filter = format!(
         "aresample={target_rate}:resampler=soxr:precision=28:osf={sample_fmt}:\
          dither_method=triangular_hp"
     );
 
-    let output = Command::new("ffmpeg")
-        .args(["-y", "-hide_banner", "-loglevel", "error"])
+    let mut cmd = Command::new("ffmpeg");
+    cmd.args(["-y", "-hide_banner", "-loglevel", "error"])
         .arg("-i")
         .arg(path)
         .args(["-map", "0"])
@@ -168,17 +168,71 @@ pub fn downsample(path: &Path, target_rate: u32, target_depth: u16) -> Result<()
         .args(["-sample_fmt", sample_fmt])
         .args(["-map_metadata", "0"])
         .args(["-metadata", "encoder="])
-        .arg(&tmp)
-        .output()
-        .map_err(|e| {
-            return match e.kind() {
-                std::io::ErrorKind::NotFound => Error::ToolMissing { tool: "ffmpeg" },
-                _ => Error::io(path, e),
-            };
-        })?;
+        .arg(&tmp);
+    run_ffmpeg(cmd, path, &tmp)?;
+
+    if let Err(e) = std::fs::rename(&tmp, path) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(Error::io(path, e));
+    }
+    return Ok(());
+}
+
+pub fn transcode_opus(path: &Path, bitrate_kbps: u32) -> Result<PathBuf> {
+    if is_lossy(path) {
+        return Err(Error::ConfigInvalid(format!(
+            "refusing to transcode lossy file {}: opus transcode applies to lossless only",
+            path.display()
+        )));
+    }
+
+    let dst = path.with_extension("opus");
+    if dst.exists() {
+        return Err(Error::ConfigInvalid(format!(
+            "refusing to transcode {}: {} already exists",
+            path.display(),
+            dst.display()
+        )));
+    }
+
+    let tmp = temp_sibling(path, "opus");
+    let bitrate = format!("{bitrate_kbps}k");
+    let mut cmd = Command::new("ffmpeg");
+    cmd.args(["-nostdin", "-y", "-hide_banner", "-loglevel", "error"])
+        .arg("-i")
+        .arg(path)
+        .args(["-map", "0:a:0"])
+        .args(["-map_metadata", "0"])
+        .args(["-map_chapters", "-1"])
+        .args(["-af", "aresample=48000:filter_size=64:phase_shift=10"])
+        .args(["-c:a", "libopus"])
+        .args(["-b:a", &bitrate])
+        .args(["-vbr", "on"])
+        .args(["-compression_level", "10"])
+        .args(["-application", "audio"])
+        .args(["-fflags", "+bitexact"])
+        .args(["-f", "opus"])
+        .arg(&tmp);
+    run_ffmpeg(cmd, path, &tmp)?;
+
+    if let Err(e) = std::fs::rename(&tmp, &dst) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(Error::io(&dst, e));
+    }
+    std::fs::remove_file(path).map_err(|e| return Error::io(path, e))?;
+    return Ok(dst);
+}
+
+fn run_ffmpeg(mut cmd: Command, path: &Path, tmp: &Path) -> Result<()> {
+    let output = cmd.output().map_err(|e| {
+        return match e.kind() {
+            std::io::ErrorKind::NotFound => Error::ToolMissing { tool: "ffmpeg" },
+            _ => Error::io(path, e),
+        };
+    })?;
 
     if !output.status.success() {
-        let _ = std::fs::remove_file(&tmp);
+        let _ = std::fs::remove_file(tmp);
         return Err(Error::ToolFailed {
             tool: "ffmpeg",
             status: output.status.to_string(),
@@ -188,17 +242,12 @@ pub fn downsample(path: &Path, target_rate: u32, target_depth: u16) -> Result<()
                 .collect(),
         });
     }
-
-    if let Err(e) = std::fs::rename(&tmp, path) {
-        let _ = std::fs::remove_file(&tmp);
-        return Err(Error::io(path, e));
-    }
     return Ok(());
 }
 
-fn temp_sibling(path: &Path) -> PathBuf {
+fn temp_sibling(path: &Path, ext: &str) -> PathBuf {
     let mut name = path.file_name().unwrap_or_default().to_os_string();
-    name.push(format!(".mimport-tmp.{}.flac", std::process::id()));
+    name.push(format!(".mimport-tmp.{}.{ext}", std::process::id()));
     return path.with_file_name(name);
 }
 

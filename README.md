@@ -19,7 +19,8 @@ Each stage is a separate, explicit command:
 5. **Fetch** — enqueue downloads by search-id/username/directory; returns a job id.
 6. **Status** — non-blocking poll of a job's transfer state.
 7. **Import** — automatically postfixes first (strips junk tags, downsamples
-   lossless to the `[quality]` target — 16/44 by default), then matches files
+   lossless to the `[quality]` target — 16/44 by default — or transcodes it to
+   Opus with `codec = "opus"`), then matches files
    to the release's tracks, writes clean tags, and copies (or `--move`) into
    the library. Cover art is opt-in: `--cover <img>` embeds a local image,
    `--cover-art` fetches the front cover from the Cover Art Archive (cached
@@ -145,8 +146,10 @@ is gitignored because it holds the credentials below; keep it out of version con
   with `transfers.download.destination.subdirectory` set to
   `${SOURCE_USERNAME}/${SOURCE_DIRECTORY}` so on-disk layout matches the job's
   `local_dir` (`<downloads>/<username>/<remote parent dirname>`).
-- `[quality]` — import's automatic downsample target (lossless files above
-  this rate/depth are resampled during import; lossy files are never touched).
+- `[quality]` — what import does to lossless files. `codec = "flac"` (default)
+  resamples files above `target_samplerate`/`target_bitdepth`; `codec = "opus"`
+  transcodes every lossless file to Opus at `opus_bitrate_kbps` (default 160,
+  VBR, 48 kHz) and removes the source. Lossy files are never touched.
 - `[scoring]` — edition-scorer weights (optional, sane defaults).
 - `[cover_art]` — Cover Art Archive base URL and disk cache dir (optional; fetch is opt-in
   via `import --cover-art` / `cover --fetch`). `itunes_fallback` (default on) falls back

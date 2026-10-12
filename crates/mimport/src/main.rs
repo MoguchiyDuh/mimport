@@ -270,8 +270,10 @@ fn run_import(
         &dir,
         &postfix::Options {
             dry_run: flags.dry_run,
+            codec: cfg.quality.codec,
             target_rate: cfg.quality.target_samplerate,
             target_depth: cfg.quality.target_bitdepth,
+            opus_bitrate_kbps: cfg.quality.opus_bitrate_kbps,
         },
     )?;
 
