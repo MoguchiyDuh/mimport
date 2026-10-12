@@ -10,6 +10,7 @@ use lofty::ogg::{OpusFile, VorbisComments};
 use serde::Serialize;
 
 use crate::audio::{self, AudioProperties, is_audio, is_temp_file};
+use crate::config::Codec;
 use crate::error::{Error, Result};
 
 pub const ALLOWLIST: &[&str] = &[
@@ -82,6 +83,7 @@ fn normalized_allowlist() -> &'static BTreeSet<String> {
 pub struct Report {
     pub files_scanned: usize,
     pub downsampled: Vec<PathBuf>,
+    pub transcoded: Vec<PathBuf>,
     /// Lossy-container files (mp3/m4a/opus/...) present in the scan; they are
     /// never resampled or transcode-flagged — resampling lossy audio means a
     /// destructive lossy-to-lossless transcode, and "suspiciously low
@@ -107,6 +109,7 @@ pub struct SuspiciousFile {
 impl Report {
     pub fn changed(&self) -> bool {
         return !self.downsampled.is_empty()
+            || !self.transcoded.is_empty()
             || !self.tags_purged.is_empty()
             || !self.stripped_id3v2.is_empty();
     }
@@ -114,8 +117,10 @@ impl Report {
 
 pub struct Options {
     pub dry_run: bool,
+    pub codec: Codec,
     pub target_rate: u32,
     pub target_depth: u16,
+    pub opus_bitrate_kbps: u32,
 }
 
 pub fn run(root: &Path, opts: &Options) -> Result<Report> {
@@ -173,30 +178,46 @@ pub fn run(root: &Path, opts: &Options) -> Result<Report> {
                 });
             }
 
-            if audio::needs_downsample(&props, opts.target_rate, opts.target_depth) {
-                report.downsampled.push(path.clone());
-                if !opts.dry_run {
-                    audio::downsample(path, opts.target_rate, opts.target_depth)?;
+            match opts.codec {
+                Codec::Opus => {
+                    report.transcoded.push(path.with_extension("opus"));
+                    if !opts.dry_run {
+                        let dst = audio::transcode_opus(path, opts.opus_bitrate_kbps)?;
+                        purge_and_report(&dst, opts.dry_run, &mut report);
+                        continue;
+                    }
+                }
+                Codec::Flac => {
+                    if audio::needs_downsample(&props, opts.target_rate, opts.target_depth) {
+                        report.downsampled.push(path.clone());
+                        if !opts.dry_run {
+                            audio::downsample(path, opts.target_rate, opts.target_depth)?;
+                        }
+                    }
                 }
             }
         }
 
-        let purged = match purge_tags(path, opts.dry_run) {
-            Ok(purged) => purged,
-            Err(e) => {
-                tracing::warn!("skipping tag purge for {}: {e}", path.display());
-                continue;
-            }
-        };
-        if !purged.is_empty() {
-            report.tags_purged.push(TagsPurged {
-                path: path.clone(),
-                keys: purged,
-            });
-        }
+        purge_and_report(path, opts.dry_run, &mut report);
     }
 
     return Ok(report);
+}
+
+fn purge_and_report(path: &Path, dry_run: bool, report: &mut Report) {
+    let purged = match purge_tags(path, dry_run) {
+        Ok(purged) => purged,
+        Err(e) => {
+            tracing::warn!("skipping tag purge for {}: {e}", path.display());
+            return;
+        }
+    };
+    if !purged.is_empty() {
+        report.tags_purged.push(TagsPurged {
+            path: path.to_path_buf(),
+            keys: purged,
+        });
+    }
 }
 
 fn purge_tags(path: &Path, dry_run: bool) -> Result<Vec<String>> {

@@ -33,7 +33,7 @@ pub enum Command {
     Slskd(SlskdCmd),
 
     /// Match files against an MB release, postfix them (junk-tag strip +
-    /// downsample lossless to the [quality] target), write clean tags, and
+    /// downsample or opus-transcode lossless per [quality]), write clean tags, and
     /// copy (or --move) into the library.
     Import {
         /// job id, jobs.title, or a raw filesystem path (ad hoc, outside job tracking)

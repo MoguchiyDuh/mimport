@@ -30,8 +30,10 @@ password = "CHANGE_ME"
 # fetch_timeout_per_file_secs = 30
 
 [quality]
+codec = "flac"
 target_samplerate = 44100
 target_bitdepth = 16
+opus_bitrate_kbps = 160
 
 [cover_art]
 base_url = "https://coverartarchive.org"

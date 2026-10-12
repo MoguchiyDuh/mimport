@@ -137,19 +137,33 @@ pub struct SlskdConfig {
     pub request_timeout_secs: u64,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Codec {
+    #[default]
+    Flac,
+    Opus,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct QualityConfig {
+    #[serde(default)]
+    pub codec: Codec,
     #[serde(default = "default_samplerate")]
     pub target_samplerate: u32,
     #[serde(default = "default_bitdepth")]
     pub target_bitdepth: u16,
+    #[serde(default = "default_opus_bitrate_kbps")]
+    pub opus_bitrate_kbps: u32,
 }
 
 impl Default for QualityConfig {
     fn default() -> Self {
         return QualityConfig {
+            codec: Codec::default(),
             target_samplerate: default_samplerate(),
             target_bitdepth: default_bitdepth(),
+            opus_bitrate_kbps: default_opus_bitrate_kbps(),
         };
     }
 }
@@ -195,6 +209,9 @@ fn default_samplerate() -> u32 {
 }
 fn default_bitdepth() -> u16 {
     return 16;
+}
+fn default_opus_bitrate_kbps() -> u32 {
+    return 160;
 }
 
 #[derive(Debug, Clone, Deserialize)]
