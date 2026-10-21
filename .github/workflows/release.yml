@@ -1,0 +1,54 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  TARGET: x86_64-unknown-linux-musl
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install musl toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends musl-tools
+          rustup target add "$TARGET"
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ env.TARGET }}
+
+      - name: Build
+        run: cargo build --release --locked --target "$TARGET" -p mimport
+
+      - name: Package
+        run: |
+          install -D "target/$TARGET/release/mimport" dist/mimport
+          strip dist/mimport
+          tar -C dist -czf "mimport-$TARGET.tar.gz" mimport
+          sha256sum "mimport-$TARGET.tar.gz" > "mimport-$TARGET.tar.gz.sha256"
+          file dist/mimport
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mimport-${{ env.TARGET }}
+          path: mimport-${{ env.TARGET }}.tar.gz*
+
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            mimport-${{ env.TARGET }}.tar.gz
+            mimport-${{ env.TARGET }}.tar.gz.sha256
