@@ -4,7 +4,9 @@ set -euo pipefail
 repo="MoguchiyDuh/mimport"
 target="x86_64-unknown-linux-musl"
 asset="mimport-${target}.tar.gz"
-dest="${MIMPORT_BIN:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/mimport}"
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+dest="${MIMPORT_BIN:-$root/bin/mimport}"
+mkdir -p "$(dirname "$dest")"
 tag="${1:-latest}"
 
 if [[ "$tag" == "latest" ]]; then
