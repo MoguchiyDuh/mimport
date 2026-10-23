@@ -28,6 +28,7 @@ pub struct LibraryTrack {
     pub job_id: Option<i64>,
     pub release_mbid: Option<String>,
     pub recording_id: Option<String>,
+    pub source_url: Option<String>,
     pub artist: String,
     pub album: String,
     pub title: String,
@@ -46,6 +47,7 @@ pub(crate) fn ensure_schema(conn: &Connection) -> Result<()> {
             job_id INTEGER REFERENCES jobs(id),
             release_mbid TEXT,
             recording_id TEXT,
+            source_url TEXT,
             artist TEXT NOT NULL,
             album TEXT NOT NULL,
             title TEXT NOT NULL,
@@ -59,7 +61,67 @@ pub(crate) fn ensure_schema(conn: &Connection) -> Result<()> {
         CREATE INDEX IF NOT EXISTS library_tracks_artist ON library_tracks(artist);
         CREATE INDEX IF NOT EXISTS library_tracks_album ON library_tracks(album);",
     )?;
+    let source_url_present: bool = conn
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('library_tracks') WHERE name = 'source_url'",
+            [],
+            |row| return row.get::<_, i64>(0),
+        )
+        .map(|n| return n > 0)?;
+    if !source_url_present {
+        conn.execute_batch("ALTER TABLE library_tracks ADD COLUMN source_url TEXT;")?;
+        backfill_source_urls(conn)?;
+    }
     return Ok(());
+}
+
+/// One-time backfill for databases created before `source_url` existed: the
+/// URL was only ever written to the imported files' Vorbis comments.
+fn backfill_source_urls(conn: &Connection) -> Result<()> {
+    let rows: Vec<(i64, String)> = {
+        let mut stmt = conn.prepare("SELECT id, path FROM library_tracks")?;
+        let mapped = stmt
+            .query_map([], |row| return Ok((row.get(0)?, row.get(1)?)))?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        mapped
+    };
+    let mut filled = 0usize;
+    for (id, path) in rows {
+        let Some(url) = read_source_url(Path::new(&path)) else {
+            continue;
+        };
+        conn.execute(
+            "UPDATE library_tracks SET source_url = ?1 WHERE id = ?2",
+            params![url, id],
+        )?;
+        filled += 1;
+    }
+    if filled > 0 {
+        tracing::info!("backfilled source_url for {filled} library row(s) from file tags");
+    }
+    return Ok(());
+}
+
+fn read_source_url(path: &Path) -> Option<String> {
+    let ext = path
+        .extension()
+        .and_then(|e| return e.to_str())
+        .map(|e| return e.to_ascii_lowercase());
+    let url = match ext.as_deref() {
+        Some("opus") => {
+            let mut file = std::fs::File::open(path).ok()?;
+            let f = OpusFile::read_from(&mut file, ParseOptions::new()).ok()?;
+            f.vorbis_comments().get("SOURCEURL").map(str::to_string)
+        }
+        Some("flac") => {
+            let mut file = std::fs::File::open(path).ok()?;
+            let f = FlacFile::read_from(&mut file, ParseOptions::new()).ok()?;
+            f.vorbis_comments()
+                .and_then(|vc| return vc.get("SOURCEURL").map(str::to_string))
+        }
+        _ => None,
+    };
+    return url;
 }
 
 /// Upsert one imported file, keyed by `path`.
@@ -83,12 +145,13 @@ pub fn insert_track(
 
     conn.execute(
         "INSERT INTO library_tracks
-            (job_id, release_mbid, recording_id, artist, album, title, track_position, disc_position, year, path, format)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+            (job_id, release_mbid, recording_id, source_url, artist, album, title, track_position, disc_position, year, path, format)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
          ON CONFLICT(path) DO UPDATE SET
             job_id = COALESCE(excluded.job_id, library_tracks.job_id),
             release_mbid = COALESCE(excluded.release_mbid, library_tracks.release_mbid),
             recording_id = COALESCE(excluded.recording_id, library_tracks.recording_id),
+            source_url = COALESCE(excluded.source_url, library_tracks.source_url),
             artist = excluded.artist,
             album = excluded.album,
             title = excluded.title,
@@ -101,6 +164,7 @@ pub fn insert_track(
             job_id,
             if release.id.is_empty() { None } else { Some(release.id.as_str()) },
             matched.recording_id,
+            matched.source_url.as_deref(),
             artist,
             release.title,
             matched.title,
@@ -217,6 +281,7 @@ fn row_to_track(row: &rusqlite::Row) -> rusqlite::Result<LibraryTrack> {
         job_id: row.get("job_id")?,
         release_mbid: row.get("release_mbid")?,
         recording_id: row.get("recording_id")?,
+        source_url: row.get("source_url")?,
         artist: row.get("artist")?,
         album: row.get("album")?,
         title: row.get("title")?,
