@@ -113,6 +113,12 @@ pub enum Command {
     /// YouTube/YouTube Music fetch + import (URL-only)
     #[command(subcommand)]
     Yt(YtCmd),
+
+    #[command(about = "print a shell completion script")]
+    Completion {
+        #[arg(value_parser = ["zsh"])]
+        shell: String,
+    },
 }
 
 /// Query terms are trailing args, one shell token per clause; `--files`/`--`

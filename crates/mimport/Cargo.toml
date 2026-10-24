@@ -13,6 +13,7 @@ workspace = true
 [dependencies]
 mimport-core = { path = "../mimport-core" }
 clap.workspace = true
+clap_complete.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tracing.workspace = true
