@@ -4,7 +4,8 @@ mod output;
 use std::collections::{BTreeMap, HashSet};
 use std::path::Path;
 
-use clap::Parser;
+use clap::{CommandFactory, Parser};
+use clap_complete::{Shell, generate};
 use mimport_core::Config;
 use mimport_core::config::YtConfig;
 use mimport_core::coverart::CoverArtClient;
@@ -29,6 +30,13 @@ fn main() {
         .with_writer(std::io::stderr)
         .init();
     let cli = Cli::parse();
+
+    if let Command::Completion { .. } = &cli.command {
+        let mut command = Cli::command();
+        let name = command.get_name().to_string();
+        generate(Shell::Zsh, &mut command, name, &mut std::io::stdout());
+        return;
+    }
 
     if let Err(e) = run(&cli) {
         eprintln!("error: {e}");
@@ -106,6 +114,7 @@ fn run(cli: &Cli) -> mimport_core::Result<()> {
             run_cover(cli, &cfg, &query, fetch)
         }
         Command::Yt(cmd) => run_yt(cli, &cfg, cmd),
+        Command::Completion { .. } => return Ok(()),
     }
 }
 

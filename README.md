@@ -185,4 +185,5 @@ Requires Rust (stable, edition 2024).
 
 ```
 cargo build --release
+mimport completion zsh > ~/.local/share/zsh/site-functions/_mimport
 ```
