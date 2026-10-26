@@ -132,9 +132,13 @@ ranked free-slot first, then fastest upload speed, then shortest queue —
 top few responses only; `--all` shows everything. Fetch selectors always
 resolve against the full, unfiltered search.
 
-`library edit` takes `field=value` pairs (`title`, `artist`, `album`,
-`year`, `track`, `disc`), rewrites the file's tags to match, and with
-`--rename` re-derives the full library path from the naming scheme.
+`library edit` takes `field=value` pairs (`title`, `artist`, `album_artist`,
+`album`, `year`, `track`, `disc`, `compilation` as `1`/`0`/`true`/`false`, and
+repeatable `genre`), rewrites the file's tags to match, and with `--rename`
+re-derives the full library path from the naming scheme. `album_artist`,
+`compilation` and `genre` are tag-only — they don't affect the path or index
+columns; `artist` edits keep syncing `ALBUMARTIST`/`ARTISTS` to the new artist
+unless `album_artist` is set in the same call.
 
 Import/yt tag overrides: `--tags` takes a JSON file (`artist`, `album`,
 `album_artist`, `compilation`, `date`, `label`, `genre`/`genres`, `cover`,

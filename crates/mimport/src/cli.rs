@@ -142,7 +142,8 @@ pub enum LibraryCmd {
         rename: bool,
         #[arg(long)]
         dry_run: bool,
-        /// field=value pairs: title, artist, album, year, track, disc
+        /// field=value pairs: title, artist, album_artist, album, year,
+        /// track, disc, compilation (1/0/true/false), genre (repeatable)
         #[arg(trailing_var_arg = true)]
         fields: Vec<String>,
     },
