@@ -8,7 +8,7 @@ use lofty::file::{AudioFile, TaggedFileExt};
 use lofty::flac::FlacFile;
 use lofty::ogg::OpusFile;
 use lofty::probe::read_from_path;
-use lofty::tag::{Accessor, ItemKey, Tag};
+use lofty::tag::{Accessor, ItemKey, ItemValue, Tag, TagItem};
 use rusqlite::types::Value;
 use rusqlite::{Connection, params, params_from_iter};
 use serde::Serialize;
@@ -651,26 +651,33 @@ fn prune_empty_dirs(mut dir: &Path, stop: Option<&Path>) {
 pub struct TrackEdits {
     pub title: Option<String>,
     pub artist: Option<String>,
+    pub album_artist: Option<String>,
     pub album: Option<String>,
     pub year: Option<String>,
     pub track: Option<i64>,
     pub disc: Option<i64>,
+    pub compilation: Option<bool>,
+    pub genre: Option<Vec<String>>,
 }
 
 impl TrackEdits {
     pub fn is_empty(&self) -> bool {
         return self.title.is_none()
             && self.artist.is_none()
+            && self.album_artist.is_none()
             && self.album.is_none()
             && self.year.is_none()
             && self.track.is_none()
-            && self.disc.is_none();
+            && self.disc.is_none()
+            && self.compilation.is_none()
+            && self.genre.is_none();
     }
 }
 
-/// Parses `field=value` pairs. Editable fields are exactly the indexed ones
-/// that also live in the file's tags: `title`, `artist`, `album`, `year`,
-/// `track`, `disc`.
+/// Parses `field=value` pairs: `title`, `artist`, `album_artist`, `album`,
+/// `year`, `track`, `disc`, `compilation` (1/0/true/false) and repeatable
+/// `genre`. `album_artist`, `compilation` and `genre` are tag-only — they
+/// have no index column.
 pub fn parse_edits(pairs: &[String]) -> Result<TrackEdits> {
     let mut edits = TrackEdits::default();
     for pair in pairs {
@@ -689,14 +696,20 @@ pub fn parse_edits(pairs: &[String]) -> Result<TrackEdits> {
         match field.to_ascii_lowercase().as_str() {
             "title" => edits.title = Some(value.to_string()),
             "artist" => edits.artist = Some(value.to_string()),
+            "album_artist" => edits.album_artist = Some(value.to_string()),
             "album" => edits.album = Some(value.to_string()),
             "year" => edits.year = Some(value.to_string()),
             "track" => edits.track = Some(parse_edit_number(pair, value)?),
             "disc" => edits.disc = Some(parse_edit_number(pair, value)?),
+            "compilation" => edits.compilation = Some(parse_edit_bool(pair, value)?),
+            "genre" => edits
+                .genre
+                .get_or_insert_with(Vec::new)
+                .push(value.to_string()),
             _ => {
                 return Err(Error::QuerySyntax {
                     term: pair.clone(),
-                    reason: "unknown field (title/artist/album/year/track/disc)",
+                    reason: "unknown field (title/artist/album_artist/album/year/track/disc/compilation/genre)",
                 });
             }
         }
@@ -711,6 +724,19 @@ fn parse_edit_number(term: &str, value: &str) -> Result<i64> {
             reason: "not a number",
         };
     });
+}
+
+fn parse_edit_bool(term: &str, value: &str) -> Result<bool> {
+    return match value.to_ascii_lowercase().as_str() {
+        "1" | "true" | "yes" => Ok(true),
+        "0" | "false" | "no" => Ok(false),
+        _ => {
+            return Err(Error::QuerySyntax {
+                term: term.to_string(),
+                reason: "expected 1/0/true/false",
+            });
+        }
+    };
 }
 
 /// Applies the edits to the index row (and `new_path` when the file was
@@ -847,6 +873,10 @@ fn fill_vorbis_edits(vc: &mut lofty::ogg::VorbisComments, edits: &TrackEdits) {
         vc.insert("ALBUM ARTIST".to_string(), v.clone());
         vc.insert("ARTISTS".to_string(), v.clone());
     }
+    if let Some(v) = &edits.album_artist {
+        vc.insert("ALBUMARTIST".to_string(), v.clone());
+        vc.insert("ALBUM ARTIST".to_string(), v.clone());
+    }
     if let Some(v) = &edits.album {
         vc.set_album(v.clone());
     }
@@ -859,6 +889,19 @@ fn fill_vorbis_edits(vc: &mut lofty::ogg::VorbisComments, edits: &TrackEdits) {
     if let Some(v) = edits.disc {
         vc.set_disk(v.max(0) as u32);
     }
+    match edits.compilation {
+        Some(true) => {
+            vc.insert("COMPILATION".to_string(), "1".to_string());
+        }
+        Some(false) => drop(vc.remove("COMPILATION")),
+        None => {}
+    }
+    if let Some(genres) = &edits.genre {
+        drop(vc.remove("GENRE"));
+        for genre in genres {
+            vc.push("GENRE".to_string(), genre.clone());
+        }
+    }
 }
 
 fn fill_generic_edits(tag: &mut Tag, edits: &TrackEdits) {
@@ -869,6 +912,9 @@ fn fill_generic_edits(tag: &mut Tag, edits: &TrackEdits) {
         tag.set_artist(v.clone());
         let _ = tag.insert_text(ItemKey::AlbumArtist, v.clone());
         let _ = tag.insert_text(ItemKey::TrackArtists, v.clone());
+    }
+    if let Some(v) = &edits.album_artist {
+        let _ = tag.insert_text(ItemKey::AlbumArtist, v.clone());
     }
     if let Some(v) = &edits.album {
         tag.set_album(v.clone());
@@ -881,6 +927,19 @@ fn fill_generic_edits(tag: &mut Tag, edits: &TrackEdits) {
     }
     if let Some(v) = edits.disc {
         tag.set_disk(v.max(0) as u32);
+    }
+    match edits.compilation {
+        Some(true) => {
+            let _ = tag.insert_text(ItemKey::FlagCompilation, "1".to_string());
+        }
+        Some(false) => tag.remove_key(ItemKey::FlagCompilation),
+        None => {}
+    }
+    if let Some(genres) = &edits.genre {
+        tag.remove_key(ItemKey::Genre);
+        for genre in genres {
+            tag.push(TagItem::new(ItemKey::Genre, ItemValue::Text(genre.clone())));
+        }
     }
 }
 
