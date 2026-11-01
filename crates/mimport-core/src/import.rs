@@ -695,9 +695,7 @@ fn write_tags(
     if disc_total > 0 {
         tag.set_track_total(disc_total as u32);
     }
-    if let Some(disc) = m.medium_position {
-        tag.set_disk(disc);
-    }
+    tag.set_disk(m.medium_position.unwrap_or(1));
     if let Some(date) = &release.date
         && !date.is_empty()
     {
@@ -848,9 +846,7 @@ fn fill_vorbis(vc: &mut VorbisComments, m: &MatchedTrack, release: &NormalizedRe
     if disc_total > 0 {
         vc.set_track_total(disc_total as u32);
     }
-    if let Some(disc) = m.medium_position {
-        vc.set_disk(disc);
-    }
+    vc.set_disk(m.medium_position.unwrap_or(1));
     if let Some(date) = &release.date
         && !date.is_empty()
     {
