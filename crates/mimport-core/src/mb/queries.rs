@@ -78,7 +78,7 @@ pub fn release_with_tracks(client: &MbClient, release_mbid: &str) -> Result<Rele
         &format!("/release/{release_mbid}"),
         &[(
             "inc",
-            "media+labels+recordings+artist-credits+release-groups",
+            "media+labels+recordings+artist-credits+release-groups+genres",
         )],
     );
 }

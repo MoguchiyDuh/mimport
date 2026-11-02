@@ -51,11 +51,22 @@ pub struct Release {
     pub artist_credit: Vec<ArtistCreditItem>,
     #[serde(rename = "release-group")]
     pub release_group: Option<ReleaseGroupRef>,
+    #[serde(default)]
+    pub genres: Vec<Genre>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
 pub struct ReleaseGroupRef {
     pub id: String,
+    #[serde(default)]
+    pub genres: Vec<Genre>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct Genre {
+    pub name: String,
+    #[serde(default)]
+    pub count: u32,
 }
 
 #[derive(Debug, Deserialize, Serialize)]

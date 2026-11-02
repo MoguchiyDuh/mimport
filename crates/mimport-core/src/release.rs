@@ -1,7 +1,42 @@
 use serde::Serialize;
 
 use crate::lidarr::types::ReleaseResource as LidarrRelease;
-use crate::mb::types::{Release as MbRelease, join_artist_credit};
+use crate::mb::types::{Genre, Release as MbRelease, join_artist_credit};
+
+const GENRES_KEEP: usize = 3;
+const GENRES_MAX: usize = 4;
+
+fn top_genres(release_group: &[Genre], release: &[Genre]) -> Vec<String> {
+    let source = if release_group.is_empty() {
+        release
+    } else {
+        release_group
+    };
+    let mut ranked: Vec<&Genre> = source.iter().filter(|g| return g.count > 0).collect();
+    ranked.sort_by_key(|g| return std::cmp::Reverse(g.count));
+    let mut keep = ranked.len().min(GENRES_KEEP);
+    while keep < ranked.len().min(GENRES_MAX) && ranked[keep].count == ranked[keep - 1].count {
+        keep += 1;
+    }
+    return ranked[..keep]
+        .iter()
+        .map(|g| return title_case(&g.name))
+        .collect();
+}
+
+fn title_case(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut upper = true;
+    for c in s.chars() {
+        if upper {
+            out.extend(c.to_uppercase());
+        } else {
+            out.push(c);
+        }
+        upper = matches!(c, ' ' | '-' | '/');
+    }
+    return out;
+}
 
 #[derive(Debug, Clone, Serialize)]
 pub struct NormalizedRelease {
@@ -32,8 +67,9 @@ pub struct NormalizedRelease {
     pub album_artist: Option<String>,
     /// Marks the release a compilation (writes COMPILATION=1).
     pub compilation: bool,
-    /// Genre tags, in order; written as repeated GENRE fields. Empty unless a
-    /// manual override supplied them (MB isn't queried for genre).
+    /// Genre tags, in order; written as repeated GENRE fields. From the MB path:
+    /// top-voted release-group genres (release genres as fallback). Manual
+    /// overrides replace them. Empty from the Lidarr proxy.
     pub genres: Vec<String>,
     pub tracks: Vec<NormalizedTrack>,
 }
@@ -103,6 +139,13 @@ impl From<MbRelease> for NormalizedRelease {
             })
             .collect();
         let release_group_id = r.release_group.as_ref().map(|g| return g.id.clone());
+        let genres = top_genres(
+            r.release_group
+                .as_ref()
+                .map(|g| return g.genres.as_slice())
+                .unwrap_or_default(),
+            &r.genres,
+        );
 
         let mut tracks = Vec::new();
         for m in r.media {
@@ -149,7 +192,7 @@ impl From<MbRelease> for NormalizedRelease {
             artist_credit_native: None,
             album_artist: None,
             compilation: false,
-            genres: Vec::new(),
+            genres,
             tracks,
         };
     }
