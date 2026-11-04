@@ -14,8 +14,6 @@ use crate::cache::cache_dir_default;
 use crate::config::CoverArtConfig;
 use crate::error::{Error, Result};
 
-/// Matches the Cover Art Archive `front-500` convention so manually supplied
-/// covers embed at the same size as ones fetched from CAA.
 const MAX_COVER_EDGE: u32 = 500;
 
 const ITUNES_BASE_URL: &str = "https://itunes.apple.com";
@@ -25,9 +23,6 @@ pub struct CoverArt {
     pub bytes: Vec<u8>,
 }
 
-/// Downscales to `MAX_COVER_EDGE` on the long edge if larger (preserving
-/// aspect ratio, no cropping) and re-encodes as JPEG so embedded art stays
-/// small and format-consistent regardless of what the source file was.
 fn finish_cover(img: image::DynamicImage) -> Result<CoverArt> {
     let resized = if img.width().max(img.height()) > MAX_COVER_EDGE {
         img.resize(MAX_COVER_EDGE, MAX_COVER_EDGE, FilterType::Lanczos3)
@@ -50,7 +45,6 @@ fn finish_cover(img: image::DynamicImage) -> Result<CoverArt> {
     });
 }
 
-/// Loads a local image file and normalizes it via [`finish_cover`].
 pub fn from_local_file(path: &Path) -> Result<CoverArt> {
     let bytes = std::fs::read(path).map_err(|e| return Error::io(path, e))?;
     let img = image::load_from_memory(&bytes).map_err(|e| {
@@ -70,9 +64,6 @@ fn norm_title(s: &str) -> String {
         .collect();
 }
 
-/// iTunes tokenizes the term as required words, so a multi-title release
-/// (`A / B`) or an appended `- EP`/`- Single` suffix drives the result count
-/// to zero. Keep only the first title and drop the format suffix.
 fn itunes_album_term(album: &str) -> String {
     let head = album.split(" / ").next().unwrap_or(album).trim();
     let head = head
@@ -82,9 +73,6 @@ fn itunes_album_term(album: &str) -> String {
     return head.trim().to_string();
 }
 
-/// iTunes stores collab artists with `&`; libraries commonly use a standalone
-/// `x`/`×`. Rewrite only whitespace-delimited single-char separators so an
-/// intra-word `x` is left alone.
 fn itunes_artist_term(artist: &str) -> String {
     return artist.replace(" x ", " & ").replace(" × ", " & ");
 }
@@ -188,17 +176,12 @@ impl CoverArtClient {
         return Ok(cover);
     }
 
-    /// Release front cover with an iTunes Search API fallback for releases the
-    /// archive has no art for. The fallback result is cached under a distinct
-    /// key so stale CAA-only negatives from earlier runs don't mask it.
     pub fn front_cover_with_fallback(
         &self,
         release_mbid: &str,
         artist: &str,
         album: &str,
     ) -> Result<Option<CoverArt>> {
-        // An empty release id (synthetic YT release) has no CAA entry; the
-        // request would be a malformed `release//front-500`, so skip to iTunes.
         if !release_mbid.is_empty() {
             let key = format!("{release_mbid}.fb");
             match self.read_cache(&key) {
@@ -233,15 +216,16 @@ impl CoverArtClient {
         return self.itunes_fallback;
     }
 
-    /// Looks up an album cover via the iTunes Search API (relevance-ranked;
-    /// the first result whose normalized collection name matches the album
-    /// wins, otherwise the first result). Not cached; callers decide.
     pub fn fetch_itunes(&self, artist: &str, album: &str) -> Result<Option<CoverArt>> {
         if artist.is_empty() || album.is_empty() {
             return Ok(None);
         }
 
-        let term = format!("{} {}", itunes_artist_term(artist), itunes_album_term(album));
+        let term = format!(
+            "{} {}",
+            itunes_artist_term(artist),
+            itunes_album_term(album)
+        );
         let search: serde_json::Value = self
             .http
             .get(format!("{ITUNES_BASE_URL}/search"))
@@ -292,9 +276,6 @@ impl CoverArtClient {
                 break;
             }
         }
-        // No collection-name match (common when the storefront localizes the
-        // title): fall back to the first result only when its artist plausibly
-        // matches, so a noisy query can't embed an unrelated album's cover.
         if art_url.is_none() {
             art_url = results
                 .first()
@@ -316,8 +297,6 @@ impl CoverArtClient {
         let Some(art_url) = art_url else {
             return Ok(None);
         };
-        // artworkUrl100 is a 100x100 thumbnail; requesting a larger square
-        // from the same CDN path yields up to the original resolution.
         let big = art_url.replace("100x100bb", "1000x1000bb");
 
         let resp = self
@@ -411,9 +390,6 @@ impl CoverArtClient {
     }
 }
 
-/// Sniffs the image format from magic bytes so the embedded PICTURE block
-/// declares the correct MIME regardless of what the HTTP Content-Type header
-/// claimed (CAA has served mislabeled bodies) or what's on disk.
 fn sniff_mime(bytes: &[u8]) -> Option<&'static str> {
     if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
         return Some("image/jpeg");
@@ -427,7 +403,6 @@ fn sniff_mime(bytes: &[u8]) -> Option<&'static str> {
     return None;
 }
 
-/// True if the file already carries at least one embedded picture.
 pub fn has_embedded_cover(path: &Path) -> bool {
     let Ok(tagged) = read_from_path(path) else {
         return false;
@@ -438,9 +413,6 @@ pub fn has_embedded_cover(path: &Path) -> bool {
     return !tag.pictures().is_empty();
 }
 
-/// Embeds `cover` into an existing file's tag in place, preserving all other
-/// tags and replacing any previously embedded pictures. Only FLAC/Opus
-/// (VorbisComments) are supported; other formats are a no-op.
 pub fn embed_cover(path: &Path, cover: &CoverArt) -> Result<()> {
     let picture = Picture::unchecked(cover.bytes.clone())
         .pic_type(PictureType::CoverFront)
@@ -462,8 +434,6 @@ pub fn embed_cover(path: &Path, cover: &CoverArt) -> Result<()> {
     };
 
     match ext.as_str() {
-        // FLAC: pictures are file-level PICTURE blocks; clear them all so a
-        // source rip's art doesn't survive next to the new one.
         "flac" => {
             let mut f = FlacFile::read_from(&mut file, ParseOptions::new()).map_err(save)?;
             f.remove_pictures();
@@ -476,7 +446,6 @@ pub fn embed_cover(path: &Path, cover: &CoverArt) -> Result<()> {
             f.save_to_path(path, WriteOptions::default())
                 .map_err(save)?;
         }
-        // Opus: pictures live inside the VorbisComments.
         "opus" => {
             let mut f = OpusFile::read_from(&mut file, ParseOptions::new()).map_err(save)?;
             f.vorbis_comments_mut().remove_pictures();

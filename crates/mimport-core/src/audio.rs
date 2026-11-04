@@ -10,9 +10,6 @@ pub const AUDIO_EXTENSIONS: &[&str] = &[
     "flac", "mp3", "m4a", "mp4", "ogg", "opus", "wav", "ape", "wv",
 ];
 
-/// Formats whose audio is inherently lossy. Downsampling these means a
-/// lossy-to-lossless transcode that destroys quality and mislabels the
-/// container, so they are never resampled.
 pub const LOSSY_EXTENSIONS: &[&str] = &["mp3", "m4a", "mp4", "ogg", "opus", "aac", "wma"];
 
 pub fn is_audio(path: &Path) -> bool {
@@ -251,8 +248,6 @@ fn temp_sibling(path: &Path, ext: &str) -> PathBuf {
     return path.with_file_name(name);
 }
 
-/// True for mimport's own per-process temp files so walks skip them instead of
-/// treating a leftover `.mimport-tmp.<pid>.flac` as audio to import/postfix.
 pub fn is_temp_file(path: &Path) -> bool {
     return path
         .file_name()

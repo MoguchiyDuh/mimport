@@ -100,8 +100,6 @@ fn levenshtein(a: &str, b: &str) -> usize {
     return prev[m];
 }
 
-/// `1 - normalized Levenshtein distance`, on top of [`normalize_title`]'s
-/// quote/dash/case normalization.
 pub(crate) fn text_similarity(a: &str, b: &str) -> f64 {
     let a = normalize_title(a);
     let b = normalize_title(b);
@@ -255,8 +253,6 @@ fn term_penalty(text: &str, cfg: &Scoring) -> f64 {
     return total;
 }
 
-/// Whole-word containment: "demo" must not match "Demon Days", "edit" must
-/// not match "edition". Terms and `hay` are both lowercase.
 fn contains_term(hay: &str, term: &str) -> bool {
     let mut start = 0;
     while let Some(pos) = hay[start..].find(term) {

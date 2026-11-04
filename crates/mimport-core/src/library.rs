@@ -1,6 +1,3 @@
-//! Library index + query language over `library_tracks`, plus track editing
-//! (index row + file tags + optional rename).
-
 use std::path::Path;
 
 use lofty::config::{ParseOptions, WriteOptions};
@@ -19,7 +16,6 @@ use crate::import::{ImportedFile, MatchedTrack, sanitize};
 use crate::release::NormalizedRelease;
 use crate::scorer::text_similarity;
 
-/// `~fuzzy` hit threshold on `text_similarity`.
 const FUZZY_THRESHOLD: f64 = 0.7;
 
 #[derive(Debug, Clone, Serialize)]
@@ -75,15 +71,11 @@ pub(crate) fn ensure_schema(conn: &Connection) -> Result<()> {
     return Ok(());
 }
 
-/// One-time backfill for databases created before `source_url` existed: the
-/// URL was only ever written to the imported files' Vorbis comments.
 fn backfill_source_urls(conn: &Connection) -> Result<()> {
     let rows: Vec<(i64, String)> = {
         let mut stmt = conn.prepare("SELECT id, path FROM library_tracks")?;
-        let mapped = stmt
-            .query_map([], |row| return Ok((row.get(0)?, row.get(1)?)))?
-            .collect::<std::result::Result<Vec<_>, _>>()?;
-        mapped
+        stmt.query_map([], |row| return Ok((row.get(0)?, row.get(1)?)))?
+            .collect::<std::result::Result<Vec<_>, _>>()?
     };
     let mut filled = 0usize;
     for (id, path) in rows {
@@ -124,7 +116,6 @@ fn read_source_url(path: &Path) -> Option<String> {
     return url;
 }
 
-/// Upsert one imported file, keyed by `path`.
 pub fn insert_track(
     conn: &Connection,
     job_id: Option<i64>,
@@ -197,7 +188,6 @@ pub fn get_track(conn: &Connection, id: i64) -> Result<LibraryTrack> {
         });
 }
 
-/// Deletes rows by id; does not touch files on disk.
 pub fn remove_tracks(conn: &Connection, ids: &[i64]) -> Result<()> {
     if ids.is_empty() {
         return Ok(());
@@ -210,11 +200,6 @@ pub fn remove_tracks(conn: &Connection, ids: &[i64]) -> Result<()> {
     return Ok(());
 }
 
-/// All rows matching every clause (AND), sorted `artist, album, disc, track`.
-///
-/// Non-fuzzy clauses are pushed into SQL (ASCII case-folding) so the scan runs
-/// in SQLite and can use the artist/album indexes; `~fuzzy` clauses can't be
-/// expressed in SQL and are applied in memory over the reduced set.
 pub fn list_tracks(conn: &Connection, query: &[Clause]) -> Result<Vec<LibraryTrack>> {
     let mut where_parts: Vec<String> = Vec::new();
     let mut params: Vec<Value> = Vec::new();
@@ -255,7 +240,6 @@ pub fn list_tracks(conn: &Connection, query: &[Clause]) -> Result<Vec<LibraryTra
     return Ok(rows);
 }
 
-/// Index rows whose underlying file no longer exists on disk, `path`-ordered.
 pub fn missing_tracks(conn: &Connection) -> Result<Vec<LibraryTrack>> {
     let mut stmt = conn.prepare("SELECT * FROM library_tracks ORDER BY lower(path)")?;
     let rows = stmt
@@ -267,7 +251,6 @@ pub fn missing_tracks(conn: &Connection) -> Result<Vec<LibraryTrack>> {
         .collect());
 }
 
-/// Deletes every index row whose file is gone; returns the rows removed.
 pub fn prune_missing(conn: &Connection) -> Result<Vec<LibraryTrack>> {
     let missing = missing_tracks(conn)?;
     let ids: Vec<i64> = missing.iter().map(|t| return t.id).collect();
@@ -293,8 +276,6 @@ fn row_to_track(row: &rusqlite::Row) -> rusqlite::Result<LibraryTrack> {
         imported_at: row.get("imported_at")?,
     });
 }
-
-// --- Query language -------------------------------------------------------
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Field {
@@ -370,8 +351,6 @@ impl Clause {
         return hit != self.negate;
     }
 
-    /// SQL fragment + bound params for this clause, or `None` for fuzzy
-    /// (which SQL can't express and must stay in memory).
     fn to_sql(&self) -> Option<(String, Vec<Value>)> {
         if matches!(self.kind, MatchKind::Fuzzy(_)) {
             return None;
@@ -401,11 +380,6 @@ impl Clause {
     }
 }
 
-/// Builds a per-column SQL predicate for a non-fuzzy kind. Text matching is
-/// ASCII case-insensitive via `lower()`; a NULL column never matches. Path is
-/// matched case- and byte-sensitively against both NFC and NFD normalizations,
-/// since `lower()` only folds ASCII and stored path text may not share the
-/// query's Unicode normalization form.
 fn kind_sql(col: &str, kind: &MatchKind, field: Option<Field>) -> (String, Vec<Value>) {
     let is_path = field == Some(Field::Path);
     return match kind {
@@ -413,7 +387,10 @@ fn kind_sql(col: &str, kind: &MatchKind, field: Option<Field>) -> (String, Vec<V
             format!(
                 "{col} IS NOT NULL AND ({col} LIKE '%' || ? || '%' ESCAPE '\\' OR {col} LIKE '%' || ? || '%' ESCAPE '\\')"
             ),
-            vec![Value::Text(escape_like(&nfc(s))), Value::Text(escape_like(&nfd(s)))],
+            vec![
+                Value::Text(escape_like(&nfc(s))),
+                Value::Text(escape_like(&nfd(s))),
+            ],
         ),
         MatchKind::Exact(s) if is_path => (
             format!("{col} IS NOT NULL AND ({col} = ? OR {col} = ?)"),
@@ -473,7 +450,7 @@ fn match_text(value: &str, kind: &MatchKind) -> bool {
         MatchKind::Substring(s) => value.to_lowercase().contains(&s.to_lowercase()),
         MatchKind::Exact(s) => value.eq_ignore_ascii_case(s),
         MatchKind::Fuzzy(s) => text_similarity(value, s) >= FUZZY_THRESHOLD,
-        MatchKind::Range(..) => false, // ranges only apply to numeric fields
+        MatchKind::Range(..) => false,
     };
 }
 
@@ -507,8 +484,6 @@ fn match_field(t: &LibraryTrack, field: Field, kind: &MatchKind) -> bool {
     };
 }
 
-/// Path matching mirrors `kind_sql`'s Path handling: case- and byte-sensitive,
-/// comparing against both NFC and NFD forms of the query.
 fn match_path(value: &str, kind: &MatchKind) -> bool {
     return match kind {
         MatchKind::Substring(s) => value.contains(&nfc(s)) || value.contains(&nfd(s)),
@@ -518,8 +493,6 @@ fn match_path(value: &str, kind: &MatchKind) -> bool {
     };
 }
 
-/// Parses shell-tokenized terms. Per term: `-`/`^` negate, `field:` prefix,
-/// `~`/`=`/`lo..hi`/substring value.
 pub fn parse_query(terms: &[String]) -> Result<Vec<Clause>> {
     return terms.iter().map(|t| return parse_term(t)).collect();
 }
@@ -598,11 +571,6 @@ fn parse_term(raw: &str) -> Result<Clause> {
     });
 }
 
-/// Deletes each track's row (atomically, before touching any file) and, if
-/// `delete_files`, its file best-effort — a file that can't be removed is
-/// warned and skipped rather than aborting, since the row is already gone.
-/// Successfully deleted files' now-empty parent directories are pruned up to
-/// (and excluding) `library_root` when given.
 pub fn remove(
     conn: &Connection,
     tracks: &[LibraryTrack],
@@ -645,8 +613,6 @@ fn prune_empty_dirs(mut dir: &Path, stop: Option<&Path>) {
     }
 }
 
-// --- Edit -------------------------------------------------------------------
-
 #[derive(Debug, Default, Serialize)]
 pub struct TrackEdits {
     pub title: Option<String>,
@@ -674,10 +640,6 @@ impl TrackEdits {
     }
 }
 
-/// Parses `field=value` pairs: `title`, `artist`, `album_artist`, `album`,
-/// `year`, `track`, `disc`, `compilation` (1/0/true/false) and repeatable
-/// `genre`. `album_artist`, `compilation` and `genre` are tag-only — they
-/// have no index column.
 pub fn parse_edits(pairs: &[String]) -> Result<TrackEdits> {
     let mut edits = TrackEdits::default();
     for pair in pairs {
@@ -739,8 +701,6 @@ fn parse_edit_bool(term: &str, value: &str) -> Result<bool> {
     };
 }
 
-/// Applies the edits to the index row (and `new_path` when the file was
-/// renamed). Returns the updated row.
 pub fn edit_track(
     conn: &Connection,
     id: i64,
@@ -786,11 +746,6 @@ pub fn edit_track(
     return get_track(conn, id);
 }
 
-/// Rewrites the edited fields in the file's tags — a patch, not a fresh tag.
-/// VorbisComments (FLAC/Opus, i.e. this whole library) is written directly,
-/// same reason import writes it directly (lofty's generic `ItemKey` path has
-/// no mapping for several Vorbis fields); other formats patch their primary
-/// tag through the generic API.
 pub fn rewrite_tags(path: &Path, edits: &TrackEdits) -> Result<()> {
     if edits.is_empty() {
         return Ok(());
@@ -850,12 +805,14 @@ pub fn rewrite_tags(path: &Path, edits: &TrackEdits) -> Result<()> {
                     let _ = tagged.insert_tag(tag);
                 }
             }
-            tagged.save_to_path(path, WriteOptions::default()).map_err(|e| {
-                return Error::Probe {
-                    path: path.to_path_buf(),
-                    reason: e.to_string(),
-                };
-            })?;
+            tagged
+                .save_to_path(path, WriteOptions::default())
+                .map_err(|e| {
+                    return Error::Probe {
+                        path: path.to_path_buf(),
+                        reason: e.to_string(),
+                    };
+                })?;
         }
     }
     return Ok(());
@@ -867,8 +824,6 @@ fn fill_vorbis_edits(vc: &mut lofty::ogg::VorbisComments, edits: &TrackEdits) {
     }
     if let Some(v) = &edits.artist {
         vc.set_artist(v.clone());
-        // Keep grouping fields in sync so players don't surface a stale
-        // ALBUMARTIST/ARTISTS next to the edited ARTIST (see import::fill_vorbis).
         vc.insert("ALBUMARTIST".to_string(), v.clone());
         vc.insert("ALBUM ARTIST".to_string(), v.clone());
         vc.insert("ARTISTS".to_string(), v.clone());
@@ -943,21 +898,23 @@ fn fill_generic_edits(tag: &mut Tag, edits: &TrackEdits) {
     }
 }
 
-/// Destination the track would carry under the naming scheme, as a full path
-/// under `library_root` (`Artist/Album (Year)/NN - Title.ext`, year suffix
-/// omitted when unknown); `None` when it already matches. Computed from the
-/// pending edits over the stored row, so artist/album/year/title/track/disc
-/// changes all relocate the file. Preserves the `<disc>-<track>` prefix style
-/// when the current filename uses it, and the current prefix when the new
-/// position is missing or out of range.
 pub fn planned_rename(
     track: &LibraryTrack,
     edits: &TrackEdits,
     library_root: &Path,
 ) -> Option<String> {
-    let artist = edits.artist.clone().unwrap_or_else(|| return track.artist.clone());
-    let album = edits.album.clone().unwrap_or_else(|| return track.album.clone());
-    let title = edits.title.clone().unwrap_or_else(|| return track.title.clone());
+    let artist = edits
+        .artist
+        .clone()
+        .unwrap_or_else(|| return track.artist.clone());
+    let album = edits
+        .album
+        .clone()
+        .unwrap_or_else(|| return track.album.clone());
+    let title = edits
+        .title
+        .clone()
+        .unwrap_or_else(|| return track.title.clone());
     let year = edits.year.clone().or_else(|| return track.year.clone());
     let track_num = edits.track.or(track.track_position);
     let disc = edits.disc.or(track.disc_position).unwrap_or(1).clamp(1, 99);

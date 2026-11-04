@@ -1,7 +1,3 @@
-//! Wire types for `api.lidarr.audio`. Key casing is inconsistent within the same object,
-//! so every field is explicitly renamed — don't switch to a blanket `rename_all` without
-//! re-verifying against a live response.
-
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -20,7 +16,6 @@ pub struct ArtistResource {
     pub status: Option<String>,
     #[serde(rename = "genres", default)]
     pub genres: Vec<String>,
-    /// Summary-only (no releases); populated on both search and lookup.
     #[serde(rename = "Albums", default)]
     pub albums: Vec<AlbumSummary>,
 }
@@ -109,7 +104,6 @@ pub struct TrackResource {
     pub medium_number: Option<u32>,
 }
 
-/// Combined `search?type=all` result item — exactly one of `artist`/`album` is set.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct SearchResultItem {
     #[serde(rename = "score")]

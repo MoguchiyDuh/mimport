@@ -49,27 +49,13 @@ pub struct NormalizedRelease {
     pub formats: Vec<String>,
     pub track_count: u32,
     pub date: Option<String>,
-    /// Release-level artist credit; `None` from the Lidarr proxy (no artist field).
     pub artist_credit: Option<String>,
-    /// Per-member artist credit, only populated from the MB path; used to look up
-    /// per-artist romanization aliases. Empty from the Lidarr proxy.
     pub artist_credit_parts: Vec<ArtistCreditPart>,
-    /// Release-group mbid, only populated from the MB path; used to look up a
-    /// romanized album title alias.
     pub release_group_id: Option<String>,
-    /// Original (pre-romanization) title, set only when `title` was swapped.
     pub title_native: Option<String>,
-    /// Original (pre-romanization) artist credit, set only when `artist_credit` was swapped.
     pub artist_credit_native: Option<String>,
-    /// Album-level artist (ALBUMARTIST). Falls back to `artist_credit` at write
-    /// time when `None`; set explicitly for Various-Artists compilations, where
-    /// the album artist differs from each track's ARTIST.
     pub album_artist: Option<String>,
-    /// Marks the release a compilation (writes COMPILATION=1).
     pub compilation: bool,
-    /// Genre tags, in order; written as repeated GENRE fields. From the MB path:
-    /// top-voted release-group genres (release genres as fallback). Manual
-    /// overrides replace them. Empty from the Lidarr proxy.
     pub genres: Vec<String>,
     pub tracks: Vec<NormalizedTrack>,
 }
@@ -94,15 +80,12 @@ pub struct NormalizedTrack {
     pub length_ms: Option<u64>,
     pub recording_id: Option<String>,
     pub medium_format: Option<String>,
-    /// 1-based disc/medium number. `None` is treated as disc 1 by consumers.
     pub medium_position: Option<u32>,
     pub raw_position: Option<String>,
-    /// Original (pre-romanization) title, set only when `title` was swapped.
     pub title_native: Option<String>,
 }
 
 impl NormalizedRelease {
-    /// First `-`-delimited component of `date` (the year), or `None`.
     pub fn year(&self) -> Option<&str> {
         return self
             .date
@@ -152,11 +135,6 @@ impl From<MbRelease> for NormalizedRelease {
             let format = m.format.clone();
             let medium_position = m.position;
             for (idx, t) in m.tracks.into_iter().enumerate() {
-                // MB track numbers are arbitrary strings: vinyl releases use
-                // side-qualified numbers ("A1", "D4") and some mediums use
-                // "1-01" forms, none of which parse as positions. Fall back to
-                // the track's 1-based ordinal within its medium so position is
-                // always numeric; the raw number stays on raw_position.
                 let position = t
                     .number
                     .parse()
@@ -219,8 +197,6 @@ impl From<LidarrRelease> for NormalizedRelease {
                 .iter()
                 .find(|m| return m.position == Some(medium_number))
                 .and_then(|m| return m.format.clone());
-            // Same non-numeric-number fallback as the MB path: proxy track
-            // numbers are strings and aren't guaranteed to parse.
             let position = t
                 .track_number
                 .as_deref()

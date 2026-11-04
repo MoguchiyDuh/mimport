@@ -57,17 +57,14 @@ pub struct LidarrConfig {
 pub struct CoverArtConfig {
     #[serde(default = "default_cover_art_base_url")]
     pub base_url: String,
-    /// Disk cache for fetched front covers; defaults under the OS cache dir.
     #[serde(default)]
     pub cache_dir: Option<PathBuf>,
     #[serde(default = "default_cover_art_cache_ttl_secs")]
     pub cache_ttl_secs: u64,
     #[serde(default = "default_cover_art_negative_ttl_secs")]
     pub negative_ttl_secs: u64,
-    /// Fall back to the iTunes Search API when the archive has no cover.
     #[serde(default = "default_itunes_fallback")]
     pub itunes_fallback: bool,
-    /// iTunes storefront used for the fallback lookup.
     #[serde(default = "default_itunes_country")]
     pub itunes_country: String,
 }
@@ -103,10 +100,8 @@ fn default_cover_art_negative_ttl_secs() -> u64 {
 pub struct YtConfig {
     #[serde(default = "default_yt_dlp_path")]
     pub yt_dlp_path: String,
-    /// Netscape-format cookie jar passed to yt-dlp via --cookies
     #[serde(default)]
     pub cookies: Option<PathBuf>,
-    /// browser name passed to yt-dlp via --cookies-from-browser
     #[serde(default)]
     pub cookies_from_browser: Option<String>,
 }
@@ -373,8 +368,6 @@ pub struct BonusWeights {
     pub label_present: f64,
     #[serde(default = "default_edition_bonus")]
     pub edition_bonus: f64,
-    /// Max tracklist term-penalty a deluxe/expanded edition may carry and still
-    /// earn `edition_bonus`; above this it's treated as filler-heavy.
     #[serde(default = "default_edition_filler_cap")]
     pub edition_filler_cap: f64,
 }

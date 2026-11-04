@@ -1,5 +1,3 @@
-//! Query functions for the `lidarr` command family.
-
 use crate::error::Result;
 
 use super::client::LidarrClient;

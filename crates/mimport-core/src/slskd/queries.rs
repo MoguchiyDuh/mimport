@@ -21,8 +21,6 @@ pub struct SearchOutcome {
     pub reused: bool,
 }
 
-/// Runs a search, or reuses the latest completed search with the same query
-/// text that returned files, unless `fresh`.
 pub fn search(client: &SlskdClient, query: &str, fresh: bool) -> Result<SearchOutcome> {
     if !fresh {
         return match reusable_search_id(client, query)? {
@@ -55,9 +53,6 @@ fn run_search(client: &SlskdClient, query: &str) -> Result<SearchOutcome> {
         current = search_status(client, &current.id)?;
     }
 
-    // slskd can flip isComplete before the response payload becomes readable
-    // (observed: complete + ResponseLimitReached with 0 responses, full payload
-    // a moment later); drain briefly until responses show up.
     let mut attempts = 0;
     while current.responses.is_empty() && attempts < 5 {
         std::thread::sleep(Duration::from_millis(500));
@@ -101,12 +96,8 @@ pub fn search_status(client: &SlskdClient, id: &str) -> Result<Search> {
     return client.get(&path);
 }
 
-/// Extensions treated as lossless when filtering search results. Anything
-/// carrying both a bit depth and a sample rate also counts, whatever the
-/// extension claims.
 pub const LOSSLESS_EXTENSIONS: &[&str] = &["flac", "wav", "ape", "wv", "aiff", "alac"];
 
-/// How many responses a search view shows unless `all` is requested.
 pub const DEFAULT_TOP_RESPONSES: usize = 5;
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -115,11 +106,6 @@ pub struct SearchView {
     pub all: bool,
 }
 
-/// Display-layer projection of a completed search: files filtered to lossless,
-/// responses ranked free-slot first, then fastest upload speed, then shortest
-/// queue, then most files — truncated to the top few unless `all`. Purely
-/// presentational: fetch selectors always resolve against the full,
-/// unfiltered search.
 pub fn view_search(search: &Search, opts: SearchView) -> Search {
     let mut responses: Vec<SearchResponseItem> = Vec::with_capacity(search.responses.len());
     for r in &search.responses {
@@ -198,8 +184,6 @@ pub fn list_downloads(client: &SlskdClient) -> Result<Vec<DownloadsResponse>> {
     return client.get("/api/v0/transfers/downloads");
 }
 
-/// Cancels (if pending) and removes one tracked transfer. Removing an entry
-/// that is already gone is not an error.
 pub fn remove_download(client: &SlskdClient, username: &str, id: &str) -> Result<()> {
     let path = format!(
         "/api/v0/transfers/downloads/{}/{}?remove=true",
@@ -213,12 +197,10 @@ pub fn remove_download(client: &SlskdClient, username: &str, id: &str) -> Result
     };
 }
 
-/// Removes every completed (succeeded/errored/cancelled) tracked download.
 pub fn clear_completed_downloads(client: &SlskdClient) -> Result<()> {
     return client.delete("/api/v0/transfers/downloads/all/completed");
 }
 
-/// Splits a Soulseek remote path (`\`-separated) into (directory, basename).
 pub fn split_remote_path(path: &str) -> (&str, &str) {
     return match path.rfind('\\') {
         Some(i) => (&path[..i], &path[i + 1..]),
@@ -226,10 +208,6 @@ pub fn split_remote_path(path: &str) -> (&str, &str) {
     };
 }
 
-/// Resolves a `<username> <directory> [<filename>...]` selector against an
-/// already-fetched `Search`'s responses. `directory` must match exactly as it
-/// appears in the search result's file paths; an empty `filenames` selects
-/// every file in the directory.
 pub fn resolve_selector<'a>(
     search: &'a Search,
     username: &str,
@@ -321,9 +299,6 @@ pub fn browse_directory(
     return client.post(&path, &body);
 }
 
-/// Wait window for a fetch batch: sized to the whole batch (base + size +
-/// per-file) and re-armed on any observable progress, so a healthy download
-/// never times out while a silent/stuck one is given up on promptly.
 pub fn batch_timeout(
     cfg: &SlskdConfig,
     items: &[QueueDownloadRequestItem],
@@ -347,12 +322,6 @@ pub fn is_terminal_state(state: &str) -> bool {
         || state.contains("Rejected");
 }
 
-/// Enqueues `items` and polls each to a terminal state; `on_update` fires on
-/// every observed `Transfer` so progress persists even on timeout. The batch
-/// deadline re-arms whenever any pending transfer changes state, moves bytes,
-/// or advances in the remote queue; after `window` of total silence the
-/// stragglers are abandoned and an error is returned (states already persisted
-/// via `on_update`).
 pub fn fetch_and_wait(
     client: &SlskdClient,
     username: &str,
@@ -374,11 +343,6 @@ pub fn fetch_and_wait(
     return wait_for_transfers(client, username, enqueued.enqueued, window, on_update);
 }
 
-/// Polls already-enqueued transfers to terminal state; `on_update` fires on
-/// every observed `Transfer`. The batch deadline re-arms whenever any pending
-/// transfer changes state, moves bytes, or advances in the remote queue;
-/// after `window` of total silence the stragglers are abandoned and an error
-/// is returned (states already persisted via `on_update`).
 pub fn wait_for_transfers(
     client: &SlskdClient,
     username: &str,
@@ -422,8 +386,6 @@ pub fn wait_for_transfers(
             }
 
             let id = pending[i].transfer.id.clone();
-            // A transient status-poll failure must not abort the whole batch;
-            // keep the file pending and retry next round until its deadline.
             match transfer_status(client, username, &id) {
                 Ok(transfer) => {
                     on_update(&transfer)?;
@@ -470,10 +432,6 @@ fn signature(t: &Transfer) -> (String, i64, Option<i32>) {
 const CANCEL_SETTLE_POLLS: u32 = 10;
 const CANCEL_POLL_INTERVAL: Duration = Duration::from_millis(1000);
 
-/// Cancels and removes `old_ids` from slskd's transfer list so the same files
-/// can be re-enqueued: cancel each (waiting out any remotely-queued state),
-/// remove it, then confirm via the downloads list — slskd's by-id lookup can
-/// keep returning soft-deleted records, so the list is authoritative.
 pub fn clear_transfers(client: &SlskdClient, username: &str, old_ids: &[String]) -> Result<()> {
     for id in old_ids {
         match cancel_transfer(client, username, id, false) {
@@ -526,8 +484,6 @@ pub fn clear_transfers(client: &SlskdClient, username: &str, old_ids: &[String])
     return Ok(());
 }
 
-/// Enqueues and polls a batch to terminal state, persisting every observed
-/// transfer into `job_id`'s job_files and the outcome into the job status.
 pub fn fetch_into_job(
     client: &SlskdClient,
     username: &str,

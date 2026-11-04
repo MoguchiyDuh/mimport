@@ -1,5 +1,3 @@
-//! Direct MusicBrainz HTTP client.
-
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -59,7 +57,6 @@ impl MbClient {
         });
     }
 
-    /// GET, cached + rate-limited, retried on 429/502/503/504.
     pub fn get<T: DeserializeOwned>(&self, path: &str, extra_query: &[(&str, &str)]) -> Result<T> {
         let mut url = format!("{}{}?fmt=json", self.base_url, path);
         for (k, v) in extra_query {
@@ -74,8 +71,6 @@ impl MbClient {
         }
 
         let body = self.fetch_with_retry(path, &url)?;
-        // Parse before caching so a malformed 200 body isn't cached for the
-        // full TTL (default 30 days) and re-served as a permanent error.
         let value = serde_json::from_str(&body)?;
         self.cache.put(&url, &body)?;
         return Ok(value);

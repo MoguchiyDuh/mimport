@@ -1,5 +1,3 @@
-//! Munkres/Hungarian matching of local files against a chosen release's tracks.
-
 use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 
@@ -20,7 +18,6 @@ use crate::error::{Error, Result};
 use crate::release::{NormalizedRelease, NormalizedTrack};
 use crate::scorer::text_similarity;
 
-/// Per-track distance above this is rejected even if Munkres assigned it.
 pub const REJECT_THRESHOLD: f64 = 0.40;
 
 const W_RECORDING_ID: f64 = 10.0;
@@ -31,8 +28,6 @@ const W_INDEX: f64 = 1.0;
 const TOTAL_WEIGHT: f64 = W_RECORDING_ID + W_TITLE + W_LENGTH + W_ARTIST + W_INDEX;
 
 const SCALE: i64 = 1_000_000;
-/// Dummy row/column cost when padding to square; equals the max real distance
-/// so real matches win and hopeless ones can go unmatched.
 const DUMMY_COST_SCALED: i64 = SCALE;
 
 pub struct LocalTrack {
@@ -50,13 +45,9 @@ pub struct MatchedTrack {
     pub position: Option<u32>,
     pub medium_position: Option<u32>,
     pub title: String,
-    /// Original (pre-romanization) title, set only when `title` was swapped.
     pub title_native: Option<String>,
-    /// Source page URL, set only by yt fetch so downloads can be re-traced.
     pub source_url: Option<String>,
     pub recording_id: Option<String>,
-    /// The matched track's raw (possibly non-numeric) MB track number, carried
-    /// from match time so tag/filename derivation never re-looks-up by title.
     pub raw_position: Option<String>,
     pub distance: f64,
     pub reasons: BTreeMap<&'static str, f64>,
@@ -78,19 +69,15 @@ pub struct MatchReport {
 }
 
 impl MatchReport {
-    /// Blocks the copy/tag step whenever either set is non-empty.
     pub fn blocked(&self) -> bool {
         return !self.unmatched_files.is_empty() || !self.missing_tracks.is_empty();
     }
 
-    /// Blocks only on unmatched files; missing release tracks (a partial
-    /// album) are allowed and merely reported, not fatal.
     pub fn blocked_unmatched(&self) -> bool {
         return !self.unmatched_files.is_empty();
     }
 }
 
-/// Reads local audio files (a dir or a single file) into `LocalTrack`s.
 pub fn scan_local_tracks(dir: &Path) -> Result<Vec<LocalTrack>> {
     let mut paths = Vec::new();
     if dir.is_file() {
@@ -185,13 +172,8 @@ fn track_distance(
     release_artist: Option<&str>,
 ) -> Distance {
     let mut reasons = BTreeMap::new();
-    // Normalize by the weight of signals that had data on both sides, not the
-    // constant total: a sparsely-tagged file must not score artificially low.
     let mut present_weight = 0.0;
 
-    // MBIDs are a hint: penalized only on an explicit conflict, never for missing data.
-    // An empty/whitespace-only local MBID (yt-dlp emits blank MUSICBRAINZ_* fields) is
-    // missing data, so it must not count as a conflict either.
     let recording_id_cost = match (&local.musicbrainz_recording_id, &track.recording_id) {
         (Some(local_id), Some(track_id)) if !local_id.trim().is_empty() => {
             present_weight += W_RECORDING_ID;
@@ -210,7 +192,6 @@ fn track_distance(
     };
     reasons.insert("track_title", title_cost * W_TITLE);
 
-    // 10s free slack, then scales to the full penalty at 40s off.
     let length_cost = match (local.duration_secs, track.length_ms) {
         (Some(local_secs), Some(mb_ms)) => {
             present_weight += W_LENGTH;
@@ -248,8 +229,6 @@ fn track_distance(
     return Distance { total, reasons };
 }
 
-/// Munkres assignment; padded to square so files/tracks can go unmatched
-/// rather than force-pair with the nearest leftover.
 pub fn match_tracks(locals: &[LocalTrack], release: &NormalizedRelease) -> MatchReport {
     let n = locals.len();
     let m = release.tracks.len();
@@ -340,8 +319,6 @@ pub fn match_tracks(locals: &[LocalTrack], release: &NormalizedRelease) -> Match
     };
 }
 
-/// Parses a `{"<file path>": <track position>}` mapping into a report,
-/// bypassing matching. Unmapped files/tracks still report unmatched/missing.
 #[derive(Debug, Deserialize)]
 #[serde(untagged)]
 enum ForceTarget {
@@ -449,7 +426,6 @@ pub fn apply_force_mapping(
 pub struct ImportOptions {
     pub dry_run: bool,
     pub library_root: PathBuf,
-    /// move instead of copy; falls back to copy+remove across filesystems
     pub move_files: bool,
 }
 
@@ -465,10 +441,6 @@ pub struct CleanupReport {
     pub removed_dirs: Vec<PathBuf>,
 }
 
-/// Deletes every imported source file (the download-side copy) and prunes
-/// now-empty directories, never walking above `root`. Sources that no longer
-/// exist (--move already consumed them, or cleanup ran before) are skipped;
-/// a source that IS the placed library file (re-import in place) is kept.
 pub fn cleanup_sources(imported: &[ImportedFile], root: &Path) -> Result<CleanupReport> {
     let mut report = CleanupReport::default();
     let mut parent_dirs: Vec<PathBuf> = Vec::new();
@@ -522,8 +494,6 @@ fn place_file(source: &Path, dest: &Path, move_files: bool) -> Result<()> {
     }
 }
 
-/// Copies (or moves, with `ImportOptions::move_files`) each matched file into
-/// the library layout and writes clean tags onto the placed copy.
 pub fn write_and_copy(
     matched: &[MatchedTrack],
     release: &NormalizedRelease,
@@ -542,9 +512,6 @@ pub fn write_and_copy(
         sanitize(&format!("{} ({year})", release.title))
     };
 
-    // Resolve every (source, dest) up front so validation can fail before any
-    // file is placed — critical for --move, where a mid-batch abort would
-    // otherwise leave earlier sources already moved and unrecoverable.
     let mut plan: Vec<ImportedFile> = Vec::with_capacity(matched.len());
     let mut seen: HashSet<PathBuf> = HashSet::new();
     for m in matched {
@@ -631,8 +598,6 @@ pub fn write_and_copy(
     return Ok(plan);
 }
 
-/// True if both paths exist and refer to the same file (already-imported /
-/// re-import case); lets that file be re-tagged in place instead of erroring.
 fn same_file(a: &Path, b: &Path) -> bool {
     return match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
         (Ok(a), Ok(b)) => a == b,
@@ -640,16 +605,6 @@ fn same_file(a: &Path, b: &Path) -> bool {
     };
 }
 
-/// Writes a fresh tag, not a patch onto whatever the source carried.
-///
-/// VorbisComments (FLAC + Ogg/Opus, i.e. this whole library) is written
-/// directly rather than through lofty's generic `ItemKey`-mapped `Tag`:
-/// `ItemKey::OriginalArtist`/`OriginalAlbumTitle` have no VorbisComments
-/// mapping in lofty (`ItemKey::map_key` returns `&'static str`, so even
-/// `ItemKey::Unknown` can never map to one), so anything routed through the
-/// generic `Tag` for those two fields is silently dropped on save. Native
-/// (CJK/etc) artist/album titles ride in raw `ORIGINALARTIST`/
-/// `ORIGINALALBUMTITLE` vorbis fields instead.
 fn write_tags(
     path: &Path,
     m: &MatchedTrack,
@@ -675,7 +630,6 @@ fn write_tags(
     if let Some(artist) = &release.artist_credit {
         tag.set_artist(artist.clone());
     }
-    // ALBUMARTIST may differ from ARTIST (Various-Artists compilations).
     if let Some(album_artist) = release
         .album_artist
         .as_ref()
@@ -719,7 +673,6 @@ fn write_tags(
     if let Some(native) = &m.title_native {
         let _ = tag.insert_text(ItemKey::Comment, format!("Original title: {native}"));
     }
-    // release.id may be a non-mbid sentinel (yt fetch with no --release backfill)
     if looks_like_mbid(&release.id) {
         let _ = tag.insert_text(ItemKey::MusicBrainzReleaseId, release.id.clone());
     }
@@ -767,9 +720,6 @@ fn write_vorbis_tags(
         .unwrap_or_default()
         .to_ascii_lowercase();
 
-    // FLAC: manage the file directly. Replacing the VorbisComments alone
-    // leaves the file-level PICTURE blocks intact, so a source rip's existing
-    // cover would survive alongside the new one (duplicate embedded art).
     if ext == "flac" {
         let mut file = std::fs::File::open(path).map_err(|e| return Error::io(path, e))?;
         let mut f = FlacFile::read_from(&mut file, ParseOptions::new()).map_err(|e| {
@@ -797,7 +747,6 @@ fn write_vorbis_tags(
         return Ok(());
     }
 
-    // Opus: pictures live inside the comments, so a fresh tag drops old ones.
     let mut vc = VorbisComments::new();
     fill_vorbis(&mut vc, m, release);
     if let Some(ca) = cover_art {
@@ -826,7 +775,6 @@ fn fill_vorbis(vc: &mut VorbisComments, m: &MatchedTrack, release: &NormalizedRe
     if let Some(artist) = &release.artist_credit {
         vc.set_artist(artist.clone());
     }
-    // ALBUMARTIST may differ from ARTIST (Various-Artists compilations).
     if let Some(album_artist) = release
         .album_artist
         .as_ref()
@@ -856,8 +804,6 @@ fn fill_vorbis(vc: &mut VorbisComments, m: &MatchedTrack, release: &NormalizedRe
         vc.insert("LABEL".to_string(), label.clone());
     }
     if !release.genres.is_empty() {
-        // Drop any source genres first so repeated GENRE fields are exactly
-        // `release.genres`, not a merge with the rip's existing tags.
         drop(vc.remove("GENRE"));
         for genre in &release.genres {
             vc.push("GENRE".to_string(), genre.clone());
@@ -878,7 +824,6 @@ fn fill_vorbis(vc: &mut VorbisComments, m: &MatchedTrack, release: &NormalizedRe
     if let Some(url) = &m.source_url {
         vc.insert("SOURCEURL".to_string(), url.clone());
     }
-    // release.id may be a non-mbid sentinel (yt fetch with no --release backfill)
     if looks_like_mbid(&release.id) {
         vc.insert("MUSICBRAINZ_ALBUMID".to_string(), release.id.clone());
     }

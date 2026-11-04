@@ -135,7 +135,6 @@ pub struct Directory {
     pub directories: Vec<Directory>,
 }
 
-/// One peer's entry in `GET /api/v0/transfers/downloads`.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct DownloadsResponse {
     pub username: String,

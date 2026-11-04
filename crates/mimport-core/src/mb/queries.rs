@@ -93,14 +93,12 @@ pub fn search_recordings(client: &MbClient, query: &str) -> Result<Vec<Recording
     return Ok(resp.recordings);
 }
 
-/// Editor-curated aliases for an artist; used to find a romanized display name.
 pub fn artist_aliases(client: &MbClient, artist_mbid: &str) -> Result<Vec<Alias>> {
     let resp: AliasResponse =
         client.get(&format!("/artist/{artist_mbid}"), &[("inc", "aliases")])?;
     return Ok(resp.aliases);
 }
 
-/// Editor-curated aliases for a release-group; used to find a romanized album title.
 pub fn release_group_aliases(client: &MbClient, release_group_mbid: &str) -> Result<Vec<Alias>> {
     let resp: AliasResponse = client.get(
         &format!("/release-group/{release_group_mbid}"),
@@ -109,7 +107,6 @@ pub fn release_group_aliases(client: &MbClient, release_group_mbid: &str) -> Res
     return Ok(resp.aliases);
 }
 
-/// Editor-curated aliases for a recording; used to find a romanized track title.
 pub fn recording_aliases(client: &MbClient, recording_mbid: &str) -> Result<Vec<Alias>> {
     let resp: AliasResponse = client.get(
         &format!("/recording/{recording_mbid}"),

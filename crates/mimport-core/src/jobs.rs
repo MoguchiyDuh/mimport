@@ -77,9 +77,6 @@ fn ensure_schema(conn: &Connection) -> Result<()> {
     return Ok(());
 }
 
-/// `<downloads_root>/<username>/<basename of the remote directory>`.
-/// Namespaced by peer so two directories with the same basename (a very
-/// common Soulseek case — "Discography", album names) can't interleave.
 pub fn local_dir_for(downloads_root: &Path, username: &str, remote_directory: &str) -> PathBuf {
     let basename = remote_directory
         .rsplit('\\')
@@ -195,8 +192,6 @@ pub fn get_job_files(conn: &Connection, job_id: i64) -> Result<Vec<JobFile>> {
     return Ok(rows);
 }
 
-/// Deletes specific job_files rows (used when a retried transfer's old row is
-/// superseded by a new transfer id).
 pub fn delete_job_files(conn: &Connection, job_id: i64, transfer_ids: &[String]) -> Result<()> {
     if transfer_ids.is_empty() {
         return Ok(());
@@ -217,8 +212,6 @@ pub fn delete_job_files(conn: &Connection, job_id: i64, transfer_ids: &[String])
     return Ok(());
 }
 
-/// Overwrites one job_file's state (used when slskd has already removed the
-/// transfer and can no longer report it, e.g. after `cancel --remove`).
 pub fn set_job_file_state(
     conn: &Connection,
     job_id: i64,
@@ -232,8 +225,6 @@ pub fn set_job_file_state(
     return Ok(());
 }
 
-/// Numeric string = job id, falling back to an exact `jobs.title` match;
-/// otherwise exact `jobs.title` match, most-recent wins.
 pub fn resolve_target(conn: &Connection, target: &str) -> Result<Job> {
     if let Ok(id) = target.parse::<i64>() {
         match get_job(conn, id) {
@@ -315,8 +306,6 @@ fn is_succeeded(state: &str) -> bool {
     return state.starts_with("Completed") && state.contains("Succeeded");
 }
 
-/// Files that a `retry` should re-enqueue: anything not successfully
-/// completed (stuck, queued, cancelled, errored, rejected).
 pub fn retryable_files(files: &[JobFile]) -> Vec<&JobFile> {
     return files
         .iter()

@@ -56,10 +56,6 @@ pub struct Report {
     pub files_scanned: usize,
     pub downsampled: Vec<PathBuf>,
     pub transcoded: Vec<PathBuf>,
-    /// Lossy-container files (mp3/m4a/opus/...) present in the scan; they are
-    /// never resampled or transcode-flagged — resampling lossy audio means a
-    /// destructive lossy-to-lossless transcode, and "suspiciously low
-    /// bitrate" is their normal state.
     pub skipped_lossy: Vec<PathBuf>,
     pub tags_purged: Vec<TagsPurged>,
     pub suspicious: Vec<SuspiciousFile>,
@@ -289,12 +285,6 @@ pub fn quality_ok(props: &AudioProperties, target_rate: u32, target_depth: u16) 
     return !audio::needs_downsample(props, target_rate, target_depth);
 }
 
-/// Some FLACs carry a stray ID3v2 chunk before the `fLaC` stream magic (the
-/// "Encountered an ID3v2 tag" lofty warning). Lofty refuses to rewrite such
-/// files, which silently breaks `cover --fetch` and re-import tag writes.
-/// Returns `None` if the file has no ID3v2 prefix; `Some(true)` if the prefix
-/// was stripped (or would be, on dry-run); `Some(false)` if a prefix is
-/// present but no `fLaC` magic follows within the first 2 MB.
 fn strip_id3v2_prefix(path: &Path, dry_run: bool) -> Result<Option<bool>> {
     let mut file = std::fs::File::open(path).map_err(|e| return Error::io(path, e))?;
     let mut head = [0u8; 3];

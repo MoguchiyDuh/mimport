@@ -144,7 +144,6 @@ pub struct ArtistCreditArtist {
     pub id: String,
 }
 
-/// One MusicBrainz alias entry; used to find editor-curated romanizations.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Alias {
     pub name: String,
@@ -160,7 +159,6 @@ pub struct AliasResponse {
     pub aliases: Vec<Alias>,
 }
 
-/// Joins the artist-credit array into one display string.
 pub fn join_artist_credit(credits: &[ArtistCreditItem]) -> Option<String> {
     if credits.is_empty() {
         return None;

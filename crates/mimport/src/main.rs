@@ -220,8 +220,6 @@ fn run_mb(cli: &Cli, cfg: &Config, cmd: &MbCmd) -> mimport_core::Result<()> {
     return Ok(());
 }
 
-/// Numeric id or a jobs.title match takes precedence; an existing filesystem
-/// path not matching either is operated on ad hoc, outside job tracking.
 fn resolve_job_or_path(
     cfg: &Config,
     target: &str,
@@ -273,8 +271,6 @@ fn run_import(
 ) -> mimport_core::Result<()> {
     let (job, dir) = resolve_job_or_path(cfg, target)?;
 
-    // Postfix is part of import: strip junk tags and downsample lossless files
-    // to the [quality] target before matching. Dry-run only reports.
     let postfix_report = postfix::run(
         &dir,
         &postfix::Options {
@@ -324,8 +320,6 @@ fn run_import(
         None if flags.allow_partial => report.blocked_unmatched(),
         None => report.blocked(),
     };
-    // Resolve cover art only once we know we'll write (not blocked, not dry-run);
-    // the CAA network fetch is opt-in (--cover-art) so the common path stays offline.
     let cover_art = if blocked || flags.dry_run {
         None
     } else {
@@ -367,7 +361,6 @@ fn run_import(
         imported = import::write_and_copy(&report.matched, &release, &opts, cover_art.as_ref())?;
         if !flags.dry_run {
             let db = jobs::open(&cfg.paths.database)?;
-            // index each copy (job_id NULL for ad hoc path targets)
             for (m, f) in report.matched.iter().zip(imported.iter()) {
                 library::insert_track(&db, job.as_ref().map(|j| return j.id), &release, m, f)?;
             }
@@ -532,7 +525,8 @@ fn run_cover(cli: &Cli, cfg: &Config, query: &[String], fetch: bool) -> mimport_
             continue;
         }
 
-        let embed_into = |ts: &[&library::LibraryTrack], cover: &mimport_core::coverart::CoverArt| {
+        let embed_into = |ts: &[&library::LibraryTrack],
+                          cover: &mimport_core::coverart::CoverArt| {
             let mut embedded = 0;
             let mut failed = Vec::new();
             for t in ts {
@@ -548,9 +542,6 @@ fn run_cover(cli: &Cli, cfg: &Config, query: &[String], fetch: bool) -> mimport_
         };
 
         let Some(mbid) = mbid else {
-            // NULL release (e.g. YT imports): no CAA lookup is possible, but the
-            // iTunes fallback keys off artist/album, which we have. Sub-group by
-            // (artist, album) so distinct albums sharing NULL don't cross-embed.
             if !client.itunes_fallback_enabled() {
                 results.push(serde_json::json!({
                     "release": null,
@@ -716,8 +707,6 @@ fn run_yt(cli: &Cli, cfg: &Config, cmd: &YtCmd) -> mimport_core::Result<()> {
     let fetched = yt::fetch(&yt_cfg, url, &cfg.paths.staging, false)?;
     let fetched = fetched.into_iter().next().ok_or(Error::YtEmptyFetch)?;
 
-    // Manual overrides apply in both modes: against the MB release when
-    // --release is given, or straight onto the synthetic release otherwise.
     let mut overrides = match tags {
         Some(path) => tags::TagOverrides::load(path)?,
         None => tags::TagOverrides::default(),
@@ -812,14 +801,10 @@ fn run_yt(cli: &Cli, cfg: &Config, cmd: &YtCmd) -> mimport_core::Result<()> {
         }
     };
 
-    // `--title` still wins over the (already resolved) backfill track title, so a
-    // manual per-video title override is possible without a --tags file.
     let final_title = title
         .clone()
         .or_else(|| return backfill.as_ref().map(|t| return t.title.clone()))
         .ok_or(Error::YtTitleRequired)?;
-    // In the --release path norm_release.artist_credit is already the resolved
-    // (override + romanization) artist; in the synthetic path it's the raw --artist.
     let final_artist = norm_release
         .artist_credit
         .clone()
@@ -854,7 +839,6 @@ fn run_yt(cli: &Cli, cfg: &Config, cmd: &YtCmd) -> mimport_core::Result<()> {
         reasons: std::collections::BTreeMap::new(),
     }];
 
-    // Cover art is always the YouTube thumbnail (no manual override for yt).
     let cover_art = match &fetched.thumbnail {
         Some(thumb) => Some(mimport_core::coverart::from_local_file(thumb)?),
         None => None,
@@ -934,20 +918,11 @@ fn run_yt_playlist(
         )));
     }
 
-    // Cover art is always the YouTube thumbnail; use the first entry that has one.
     let cover_art = match fetched.iter().find_map(|f| return f.thumbnail.as_ref()) {
         Some(thumb) => Some(mimport_core::coverart::from_local_file(thumb)?),
         None => None,
     };
 
-    // A YouTube playlist is one continuous running order. For single-disc
-    // releases that maps straight onto track.position (which also keeps
-    // non-contiguous vinyl numbering working); for multi-disc releases, whose
-    // per-medium positions reset each disc, map playlist_index onto the
-    // release's global (disc, position) running order instead.
-    // Entries yt-dlp skipped (--ignore-errors) simply don't appear in `fetched`;
-    // a fetched entry whose index has no release track is warned and skipped
-    // rather than aborting the whole import.
     let multi_disc = release
         .tracks
         .iter()
@@ -1136,9 +1111,6 @@ fn run_slskd(cli: &Cli, cfg: &Config, cmd: &SlskdCmd) -> mimport_core::Result<()
                 }
                 cancelled_any = true;
                 slskd_q::cancel_transfer(&client, &job.username, &f.transfer_id, *remove)?;
-                // With --remove slskd may have already deleted the transfer,
-                // in which case the follow-up status fetch 404s; record the
-                // cancel locally instead of failing the whole command.
                 match slskd_q::transfer_status(&client, &job.username, &f.transfer_id) {
                     Ok(transfer) => {
                         jobs::upsert_job_file(
@@ -1157,9 +1129,6 @@ fn run_slskd(cli: &Cli, cfg: &Config, cmd: &SlskdCmd) -> mimport_core::Result<()
                 }
             }
             let files = jobs::get_job_files(&db, job.id)?;
-            // Only overwrite job.status if something was actually cancelled here —
-            // otherwise a no-op cancel on an already-terminal job would clobber a
-            // downstream status like "imported" back to a raw fetch-outcome label.
             if cancelled_any {
                 let states: Vec<&str> = files.iter().map(|f| return f.state.as_str()).collect();
                 jobs::set_job_status(&db, job.id, jobs::derive_status_from_states(&states))?;
@@ -1198,8 +1167,6 @@ fn run_slskd(cli: &Cli, cfg: &Config, cmd: &SlskdCmd) -> mimport_core::Result<()
                 })
                 .collect();
 
-            // Old transfers must be gone from slskd before the same files can
-            // be re-enqueued; DB rows are swapped only once that succeeded.
             slskd_q::clear_transfers(&client, &job.username, &dropped_ids)?;
             let enqueued = slskd_q::enqueue_downloads(&client, &job.username, &items)?;
             if enqueued.enqueued.is_empty() {

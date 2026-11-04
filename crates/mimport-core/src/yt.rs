@@ -4,8 +4,6 @@ use std::process::Command;
 use crate::config::YtConfig;
 use crate::error::{Error, Result};
 
-/// Unit separator — not expected to appear in yt-dlp's own metadata fields,
-/// used to split a single `--print` line into columns without JSON escaping.
 const FIELD_SEP: char = '\u{1f}';
 
 pub struct FetchedAudio {
@@ -19,12 +17,6 @@ pub struct FetchedAudio {
     pub thumbnail: Option<PathBuf>,
 }
 
-/// Fetches a single video (`playlist == false`) or every entry in a playlist
-/// (`playlist == true`) as Opus into `staging_dir`. Each entry's thumbnail is
-/// also written (converted to JPEG) so it can be used as cover art. In playlist
-/// mode `--ignore-errors` lets a dead/unavailable entry be skipped rather than
-/// aborting the whole batch — yt-dlp still emits a `--print` line per entry that
-/// did download, with its original `playlist_index` preserved.
 pub fn fetch(
     cfg: &YtConfig,
     url: &str,
@@ -65,11 +57,6 @@ pub fn fetch(
         };
     })?;
 
-    // In playlist mode `--ignore-errors` makes yt-dlp exit non-zero whenever any
-    // entry failed, even if others downloaded fine — so a non-zero exit isn't
-    // fatal there; we parse whatever `--print` lines came back and only bail if
-    // that leaves us with nothing (the `tracks.is_empty()` check below). Single
-    // videos have no partial-success case, so a non-zero exit stays fatal.
     if !output.status.success() && !playlist {
         return Err(Error::ToolFailed {
             tool: "yt-dlp",

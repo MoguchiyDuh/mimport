@@ -1,5 +1,3 @@
-//! `api.lidarr.audio` proxy client. Serial pacing; retries 500/502/503/504.
-
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -17,7 +15,6 @@ pub struct LidarrClient {
     pace: Mutex<Instant>,
 }
 
-/// Fixed pacing floor; the backend 500s under concurrency.
 const MIN_INTERVAL: Duration = Duration::from_millis(350);
 const USER_AGENT: &str = "mimport";
 const MAX_RETRY_AFTER_SECS: u64 = 60;
@@ -102,7 +99,6 @@ impl LidarrClient {
                 };
             }
 
-            // bare 500 is this backend's overload signal — retryable
             let retryable = matches!(status.as_u16(), 429 | 500 | 502 | 503 | 504);
             if !retryable || attempt > self.max_retries {
                 let body = resp.text().unwrap_or_default();

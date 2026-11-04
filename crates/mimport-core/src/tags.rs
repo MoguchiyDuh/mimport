@@ -1,15 +1,3 @@
-//! Manual tag overrides + MB-alias romanization, applied to a `NormalizedRelease`
-//! before matching/writing. Everything MB can set on a release/track (barring
-//! mbids and cover art fetch, which have their own dedicated paths) is
-//! overridable here: artist, album artist, album, date, label, genres, and
-//! per-track title. `compilation` marks the release as a Various-Artists
-//! compilation.
-//!
-//! Resolution order per field: manual override (unconditional) > MB
-//! romanization alias (only if the field is non-Latin) > left as-is. A
-//! non-Latin field with neither wins ends up in the returned `Unresolved`
-//! list, which is fatal unless the caller passes `--allow-native`.
-
 use std::collections::BTreeMap;
 use std::path::Path;
 
@@ -25,25 +13,16 @@ pub struct TagOverrides {
     pub album: Option<String>,
     pub date: Option<String>,
     pub label: Option<String>,
-    /// Album artist (ALBUMARTIST). Falls back to `artist` when unset; use for
-    /// Various-Artists compilations.
     pub album_artist: Option<String>,
-    /// Mark the release a compilation (writes COMPILATION=1).
     pub compilation: Option<bool>,
-    /// Single genre; kept for back-compat. Merged ahead of `genres`.
     pub genre: Option<String>,
-    /// Multiple genre tags, in order.
     #[serde(default)]
     pub genres: Vec<String>,
     pub cover: Option<std::path::PathBuf>,
-    /// Manual track titles keyed `"<disc>:<position>"` or plain `"<position>"`.
-    /// A plain position applies only when unique across the release; on
-    /// multi-disc releases with duplicate positions, qualify the disc.
     #[serde(default)]
     pub tracks: BTreeMap<String, String>,
 }
 
-/// One-shot CLI flag values layered on top of a loaded `TagOverrides`.
 pub struct FlagOverrides<'a> {
     pub artist: Option<String>,
     pub album: Option<String>,
@@ -63,7 +42,6 @@ impl TagOverrides {
             .map_err(|e| return Error::TagOverrides(format!("{}: {e}", path.display())));
     }
 
-    /// CLI flags win over whatever the `--tags` file set for the same field.
     pub fn apply_flag_overrides(&mut self, flags: FlagOverrides<'_>) -> Result<()> {
         if flags.artist.is_some() {
             self.artist = flags.artist;
@@ -105,7 +83,6 @@ impl TagOverrides {
         return Ok(());
     }
 
-    /// `genre` + `genres`, trimmed, de-duplicated, in that order.
     pub fn merged_genres(&self) -> Vec<String> {
         let mut out: Vec<String> = Vec::new();
         for g in self.genre.iter().chain(self.genres.iter()) {
@@ -118,7 +95,6 @@ impl TagOverrides {
     }
 }
 
-/// `"2:5"` or `"5"` -> canonical `"<disc>:<position>"` / `"<position>"` key.
 fn normalize_track_key(key: &str) -> Option<String> {
     let key = key.trim();
     if let Some((disc, pos)) = key.split_once(':') {
@@ -144,9 +120,6 @@ pub fn format_unresolved(unresolved: &[Unresolved]) -> String {
         .join("\n");
 }
 
-/// Applies `overrides` and MB romanization aliases to `release` in place.
-/// Returns every non-Latin field that neither an override nor an alias
-/// resolved.
 pub fn resolve(
     client: &MbClient,
     release: &mut NormalizedRelease,
@@ -217,8 +190,6 @@ fn resolve_artist(
     unresolved: &mut Vec<Unresolved>,
 ) {
     if release.artist_credit_parts.is_empty() {
-        // Lidarr path (no artist field at all) or synthetic yt release: still
-        // honor a manual override, but there's nothing to romanize.
         if let Some(artist) = &overrides.artist {
             release.artist_credit = Some(artist.clone());
         }
