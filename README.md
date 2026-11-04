@@ -1,77 +1,119 @@
 # mimport
 
-A single-user CLI pipeline for curating a music library. Resolve artists and albums via
-MusicBrainz/Lidarr, score and pick the best edition, fetch the release from Soulseek (or
-YouTube), post-process tags, and import correctly-tagged files into the library.
+A single-user CLI for curating a local music library. It resolves artists and
+releases through MusicBrainz (directly or via the Lidarr metadata proxy), ranks
+editions, fetches releases from Soulseek through [slskd] or from YouTube through
+[yt-dlp], and imports correctly tagged, correctly named files into the library.
 
-The job ends at a correctly tagged, correctly placed file on disk. Navidrome refresh and
-listening are out of scope.
+The job ends at a tagged file in the right place on disk. Serving and playback
+(Navidrome, etc.) are out of scope.
 
-The server deployment serves the library with Navidrome. Ops rules:
+## Design
 
-- **Never restart or stop the `navidrome` container** to pick up file
-  changes. Navidrome watches the library and scans on its own; for anything it
-  missed, run a scan in place: `docker exec navidrome /app/navidrome
-  scan --full` (full scan re-probes every file; plain scans only touch folders
-  whose hash changed).
-- The library is **Opus-only** since 2026-10-12 (`[quality] codec = "opus"`):
-  every import transcodes lossless sources to Opus 160k and drops the source.
-  Lossy sources are never touched.
-- YouTube/playlist sync convention: track numbers equal the playlist position
-  (`yt fetch --track <n> --album <playlist name> --album-artist "Various
-  Artists" --compilation --genre Vocaloid`). When a playlist gains a track
-  mid-order, renumber the following files' `track` tag and filename, then run a
-  full scan. Vorbis tag keys are case-sensitive — mimport writes `track`; never
-  write `TRACKNUMBER` alongside it.
+- **One explicit step per command.** Search, fetch, status, and import are
+  separate invocations. Nothing chains decisions, retries silently, or runs in
+  the background — a human or a script sits between every stage.
+- **Fail loud.** Ambiguous matches, missing tracks, and unromanized non-Latin
+  fields block the import unless explicitly overridden.
+- **Machine-readable.** Every command accepts `--json`.
 
-## Pipeline
+## Requirements
 
-Each stage is a separate, explicit command:
+- Linux x86_64 (static musl release binaries) or a Rust toolchain (stable, edition 2024)
+- `ffmpeg` on `$PATH` — lossless downsampling and Opus transcoding
+- [slskd] ≥ 0.26 for Soulseek, with
+  `transfers.download.destination.subdirectory` set to
+  `${SOURCE_USERNAME}/${SOURCE_DIRECTORY}` so the on-disk layout matches
+  `<downloads>/<username>/<remote dir>`
+- [yt-dlp] for `yt fetch` (optional)
 
-1. **Artist resolution** — search by name, or resolve directly via `mbid:<uuid>`.
-2. **Album/release discovery** — list release groups, then the editions within one.
-3. **Edition scoring** — rank editions (digital vs CD vs vinyl, studio-bonus vs
-   live/remix filler).
-4. **Soulseek search** — search slskd for the chosen release.
-5. **Fetch** — enqueue downloads by search-id/username/directory; returns a job id.
-6. **Status** — non-blocking poll of a job's transfer state.
-7. **Import** — automatically postfixes first (strips junk tags, downsamples
-   lossless to the `[quality]` target — 16/44 by default — or transcodes it to
-   Opus with `codec = "opus"`), then matches files
-   to the release's tracks, writes clean tags, and copies (or `--move`) into
-   the library. Cover art is opt-in: `--cover <img>` embeds a local image,
-   `--cover-art` fetches the front cover from the Cover Art Archive (cached
-   on disk, iTunes fallback). `--cleanup` deletes the imported source files
-   afterwards, so downloads don't pile up on disk.
-8. **Library** — browse/query/edit/remove over the index `import` populates,
-   plus a `cover` command to backfill cover art into already-imported tracks.
-9. **YT fetch** — separate URL-only path for YouTube/YouTube Music sources: yt-dlp
-    fetches Opus audio (single video or a whole playlist), tags are set manually or
-    backfilled from a MusicBrainz release, then it lands in the library same as
-    `import`.
+## Install
 
-## Agent notes
-
-mimport is designed to be driven by an AI agent issuing CLI commands with
-`--json`. Two conventions keep that fast and correct:
-
-- **Prefer the `lidarr` commands** for discovery, edition ranking, and
-  tracklists — the proxy is one fast call. `mb` hits MusicBrainz directly at
-  ~1 req/s with multiple round trips per lookup, and every `mb` command warns
-  on stderr for exactly this reason. Use `mb` only for what the proxy lacks
-  (`mb track` recording search) or when the proxy is unavailable.
-- **Job ids over paths**: `slskd fetch` returns a job id; `import` and the
-  job-scoped `slskd` commands take `<job-id|title|path>` — pass the id
-  through, don't reconstruct paths.
-
-Typical album flow:
+Prebuilt binary from the latest release:
 
 ```
-mimport lidarr album <release-group-mbid>          # pick an edition's release mbid
-mimport slskd search "<artist> album"              # lossless-only top matches
-mimport slskd fetch <search-id> <user> <dir>       # returns job id
+scripts/update.sh            # latest, installs to ./bin/mimport
+scripts/update.sh v0.1.4     # specific tag
+MIMPORT_BIN=~/.local/bin/mimport scripts/update.sh
+```
+
+From source:
+
+```
+cargo build --release
+```
+
+Zsh completion:
+
+```
+mimport completion zsh > ~/.local/share/zsh/site-functions/_mimport
+```
+
+## Configuration
+
+All configuration lives in one TOML file, `config.toml` in the working
+directory by default (`--config <path>` to override). There are no environment
+variables. Start from the example:
+
+```
+cp config.example.toml config.toml
+```
+
+`config.toml` holds the slskd credentials and is gitignored.
+
+| Section         | Purpose |
+| --------------- | ------- |
+| `[paths]`       | `library`, `downloads`, `staging`, `database` |
+| `[musicbrainz]` | `user_agent` (required, include a contact), rate limit, disk cache, retries |
+| `[lidarr]`      | Lidarr metadata proxy base URL and disk cache |
+| `[slskd]`       | Daemon URL, `username`/`password`, request and fetch timeouts |
+| `[quality]`     | What import does to lossless files (see below) |
+| `[cover_art]`   | Cover Art Archive URL, cache, iTunes fallback |
+| `[yt]`          | `yt_dlp_path`, optional `cookies` / `cookies_from_browser` |
+| `[scoring]`     | Edition-scorer weights; optional, every field has a default |
+
+**Quality.** `codec = "flac"` (default) resamples lossless files above
+`target_samplerate`/`target_bitdepth` (44100/16 by default). `codec = "opus"`
+transcodes every lossless file to Opus at `opus_bitrate_kbps` (default 160,
+VBR, 48 kHz) and drops the source. Lossy files are never re-encoded.
+
+**Fetch timeout.** The wait window is
+`fetch_timeout_base_secs + fetch_timeout_per_mb_secs × MB + fetch_timeout_per_file_secs × files`,
+re-armed whenever progress is observed. `slskd fetch --wait-secs` overrides it.
+
+**Cover art.** Fetching is opt-in (`import --cover-art`, `cover --fetch`).
+When the Cover Art Archive has nothing for a release, the iTunes Search API is
+tried (`itunes_fallback`, `itunes_country`).
+
+## Workflow
+
+```
+mimport lidarr artist "<name>"                       # artist mbid
+mimport lidarr album <release-group-mbid>            # ranked editions -> release mbid
+mimport slskd search "<artist> <album>"              # lossless-only top matches
+mimport slskd fetch <search-id> <user> <dir>         # returns a job id
+mimport slskd status <job-id>
 mimport import <job-id> --release <release-mbid> --cover-art --cleanup
 ```
+
+Prefer `lidarr` over `mb` for discovery and tracklists: the proxy answers in a
+single call, while `mb` talks to MusicBrainz directly at ~1 req/s with several
+round trips per lookup. `mb` covers what the proxy lacks (`mb track` recording
+search).
+
+Import does, in order:
+
+1. Strip junk tags and apply the `[quality]` policy to lossless files.
+2. Match files to the release's tracks (Hungarian assignment over title,
+   duration, artist, track number, and recording MBID); unmatched files block
+   the import. `--force <mapping.json>` bypasses matching.
+3. Write a fresh tag set, including the release group's top-voted MusicBrainz
+   genres.
+4. Copy (or `--move`) into
+   `<library>/<Artist>/<Album> (<Year>)/<NN> - <Title>.<ext>`, with a
+   `<DD>-` disc prefix on multi-disc releases.
+5. Optionally embed cover art and, with `--cleanup`, delete the imported
+   sources.
 
 ## Commands
 
@@ -122,72 +164,72 @@ mimport yt fetch <url> [--title <t>] [--artist <a>] [--album <a>]
                       [--tags <overrides.json>] [--allow-native]
                       [--cookies <jar>] [--cookies-from-browser <name>]
                       [--dry-run]
+
+mimport completion zsh
 ```
 
-Every command supports `--json`. `library`/`cover` query terms support
-`field:value`, `~fuzzy`, `lo..hi` ranges, and `-`/`^` negation.
+`mimport <command> --help` documents every flag.
 
-`slskd search`/`search-status` present a lossless-only view by default,
-ranked free-slot first, then fastest upload speed, then shortest queue —
-top few responses only; `--all` shows everything. Fetch selectors always
-resolve against the full, unfiltered search.
+### Soulseek search
 
-`library edit` takes `field=value` pairs (`title`, `artist`, `album_artist`,
-`album`, `year`, `track`, `disc`, `compilation` as `1`/`0`/`true`/`false`, and
-repeatable `genre`), rewrites the file's tags to match, and with `--rename`
-re-derives the full library path from the naming scheme. `album_artist`,
-`compilation` and `genre` are tag-only — they don't affect the path or index
-columns; `artist` edits keep syncing `ALBUMARTIST`/`ARTISTS` to the new artist
-unless `album_artist` is set in the same call.
+`slskd search` and `search-status` show a lossless-only view by default,
+ranked by free upload slot, then upload speed, then queue length, and trimmed
+to the top responses. `--all` shows everything. Fetch selectors always resolve
+against the full, unfiltered search.
 
-Import/yt tag overrides: `--tags` takes a JSON file (`artist`, `album`,
-`album_artist`, `compilation`, `date`, `label`, `genre`/`genres`, `cover`,
-per-position `tracks`); the individual flags win over the file for the same
-field. `--album-artist` sets ALBUMARTIST independently of ARTIST and
-`--compilation` writes COMPILATION=1, so Various-Artists compilations group as
-one album; `--genre` is repeatable and `genres`/`genre` in `--tags` are merged.
-Non-Latin (CJK/Hangul) fields are romanized via MusicBrainz aliases; without a
-usable alias or manual override the import fails unless `--allow-native` is
-passed (only meaningful with `--release`; single-video `yt fetch` applies
-`--tags` standalone when no `--release` is given).
+### Library queries
 
-## Config
+`library` and `cover` take query terms as trailing arguments, one shell token
+per clause:
 
-All configuration lives in a single `config.toml` — no `.env`, no environment
-variables. Copy `config.example.toml` to `config.toml` and fill it in. `config.toml`
-is gitignored because it holds the credentials below; keep it out of version control.
+| Term          | Meaning |
+| ------------- | ------- |
+| `field:value` | match a field |
+| `~text`       | fuzzy match |
+| `lo..hi`      | numeric range |
+| `-term`, `^term` | negation |
 
-- `[paths]` — library, downloads, staging, database.
-- `[musicbrainz]` — UA (required), rate limit, disk cache, retries.
-- `[lidarr]` — `api.lidarr.audio` proxy (cache only).
-- `[slskd]` — Soulseek daemon URL, and **username/password** (sensitive). Fetch
-  wait window = `fetch_timeout_base_secs + fetch_timeout_per_mb_secs × total MB
-  + fetch_timeout_per_file_secs × file count`, re-armed on any observed
-  progress; `fetch --wait-secs` overrides it per call. Requires slskd ≥ 0.26
-  with `transfers.download.destination.subdirectory` set to
-  `${SOURCE_USERNAME}/${SOURCE_DIRECTORY}` so on-disk layout matches the job's
-  `local_dir` (`<downloads>/<username>/<remote parent dirname>`).
-- `[quality]` — what import does to lossless files. `codec = "flac"` (default)
-  resamples files above `target_samplerate`/`target_bitdepth`; `codec = "opus"`
-  transcodes every lossless file to Opus at `opus_bitrate_kbps` (default 160,
-  VBR, 48 kHz) and removes the source. Lossy files are never touched.
-- `[scoring]` — edition-scorer weights (optional, sane defaults).
-- `[cover_art]` — Cover Art Archive base URL and disk cache dir (optional; fetch is opt-in
-  via `import --cover-art` / `cover --fetch`). `itunes_fallback` (default on) falls back
-  to the iTunes Search API (`itunes_country`, default `JP`) when the archive has no
-  cover for a release.
-- `[yt]` — `yt_dlp_path` (optional, defaults to `yt-dlp` on `$PATH`), plus optional
-  `cookies` (Netscape-format jar) / `cookies_from_browser` passed through to yt-dlp;
-  the `yt fetch --cookies*` flags override these per call.
+Flags such as `--files` must come before the terms.
 
-Sensitive values (`slskd.username`, `slskd.password`) live in `config.toml` alongside
-everything else — there is no separate secrets file.
+`library edit` takes `field=value` pairs — `title`, `artist`, `album_artist`,
+`album`, `year`, `track`, `disc`, `compilation` (`1`/`0`/`true`/`false`), and
+repeatable `genre` — rewrites the file's tags, and with `--rename` re-derives
+the library path. `album_artist`, `compilation`, and `genre` are tag-only.
+Editing `artist` also updates `ALBUMARTIST`/`ARTISTS` unless `album_artist` is
+set in the same call.
 
-## Build
+### Tag overrides
 
-Requires Rust (stable, edition 2024).
+`import` and `yt fetch` accept `--tags <file.json>`:
 
+```json
+{
+  "artist": "...",
+  "album": "...",
+  "album_artist": "Various Artists",
+  "compilation": true,
+  "date": "2024-01-01",
+  "label": "...",
+  "genres": ["..."],
+  "cover": "/path/to/cover.jpg",
+  "tracks": { "1": "Title", "2:3": "Disc 2 track 3" }
+}
 ```
-cargo build --release
-mimport completion zsh > ~/.local/share/zsh/site-functions/_mimport
-```
+
+Individual flags win over the file for the same field; `genre` and `genres`
+are merged. `--album-artist` and `--compilation` let Various-Artists
+compilations group as one album.
+
+Non-Latin (CJK/Hangul) fields are romanized via MusicBrainz aliases, preferring
+Latin-script romaji. Without a usable alias or a manual override the import
+fails unless `--allow-native` is passed.
+
+### YouTube
+
+`yt fetch` takes a video or playlist URL (`--playlist`), downloads Opus audio
+with yt-dlp, and tags it either from flags/`--tags` or by backfilling from a
+MusicBrainz release (`--release <mbid> --track <n>`). The source URL is stored
+in a `SOURCEURL` tag and indexed in the library.
+
+[slskd]: https://github.com/slskd/slskd
+[yt-dlp]: https://github.com/yt-dlp/yt-dlp

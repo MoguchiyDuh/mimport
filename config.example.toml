@@ -5,7 +5,7 @@ staging   = "/tmp/mimport-dev/staging"
 database  = "/tmp/mimport-dev/mimport.db"
 
 [musicbrainz]
-user_agent = "mimport-dev/0.1.0 ( you@example.com )"
+user_agent = "mimport/0.1 ( you@example.com )"
 cache_dir = "/tmp/mimport-dev/cache/mb"
 # base_url          = "https://musicbrainz.org/ws/2"
 # rate_limit_per_sec = 1.0
