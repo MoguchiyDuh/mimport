@@ -1,0 +1,34 @@
+[project]
+name = "mimport"
+version = "0.2.0"
+description = "Personal music library pipeline"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "httpx>=0.28.1,<0.29",
+    "mutagen>=1.48.1,<2",
+    "pillow>=13,<14",
+]
+
+[project.scripts]
+mimport = "mimport.cli:main"
+
+[build-system]
+requires = ["hatchling>=1.27,<2"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/mimport"]
+
+[tool.uv]
+no-build-package = [
+    "anyio",
+    "certifi",
+    "h11",
+    "httpcore",
+    "httpx",
+    "idna",
+    "mutagen",
+    "pillow",
+    "typing-extensions",
+]

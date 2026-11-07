@@ -47,7 +47,3 @@ base_url = "https://coverartarchive.org"
 yt_dlp_path = "yt-dlp"
 # cookies              = "/path/to/cookies.txt"   # Netscape-format jar for yt-dlp --cookies
 # cookies_from_browser = "firefox"                # yt-dlp --cookies-from-browser
-
-# [scoring] omitted — every field has a hardcoded default (see
-# mimport-core/src/config.rs Scoring/StatusWeights/MediaWeights/etc.);
-# only add this section to override specific weights.

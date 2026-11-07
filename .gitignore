@@ -1,7 +1,11 @@
-/target
-/bin
 .k/
 config.toml
 *.db
 .env
 .secrets.env
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.ruff_cache/
+/dist/

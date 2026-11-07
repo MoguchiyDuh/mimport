@@ -17,10 +17,13 @@ The job ends at a tagged file in the right place on disk. Serving and playback
   fields block the import unless explicitly overridden.
 - **Machine-readable.** Every command accepts `--json`.
 
+Output is always JSON: pretty-printed by default, compact with `--json`. Errors
+are written to stderr and return a nonzero exit status.
+
 ## Requirements
 
-- Linux x86_64 (static musl release binaries) or a Rust toolchain (stable, edition 2024)
-- `ffmpeg` on `$PATH` — lossless downsampling and Opus transcoding
+- Python 3.13+ and [uv](https://docs.astral.sh/uv/)
+- `ffmpeg` on `$PATH` — `libsoxr` for downsampling, `libopus` for Opus conversion
 - [slskd] ≥ 0.26 for Soulseek, with
   `transfers.download.destination.subdirectory` set to
   `${SOURCE_USERNAME}/${SOURCE_DIRECTORY}` so the on-disk layout matches
@@ -29,24 +32,20 @@ The job ends at a tagged file in the right place on disk. Serving and playback
 
 ## Install
 
-Prebuilt binary from the latest release:
-
-```
-scripts/update.sh            # latest, installs to ./bin/mimport
-scripts/update.sh v0.1.4     # specific tag
-MIMPORT_BIN=~/.local/bin/mimport scripts/update.sh
+```sh
+git clone https://github.com/MoguchiyDuh/mimport.git
+cd mimport
+uv run mimport --help
 ```
 
-From source:
-
-```
-cargo build --release
-```
+Run commands from the checkout with `uv run mimport`. uv manages the environment
+and dependencies. No Rust toolchain, compilation, updater, or release binary is
+needed. Dependencies use prebuilt wheels.
 
 Zsh completion:
 
-```
-mimport completion zsh > ~/.local/share/zsh/site-functions/_mimport
+```sh
+source <(uv run mimport completion zsh)
 ```
 
 ## Configuration
@@ -70,12 +69,13 @@ cp config.example.toml config.toml
 | `[quality]`     | What import does to lossless files (see below) |
 | `[cover_art]`   | Cover Art Archive URL, cache, iTunes fallback |
 | `[yt]`          | `yt_dlp_path`, optional `cookies` / `cookies_from_browser` |
-| `[scoring]`     | Edition-scorer weights; optional, every field has a default |
+| `[scoring]`     | Optional edition-scorer weights |
 
 **Quality.** `codec = "flac"` (default) resamples lossless files above
 `target_samplerate`/`target_bitdepth` (44100/16 by default). `codec = "opus"`
 transcodes every lossless file to Opus at `opus_bitrate_kbps` (default 160,
-VBR, 48 kHz) and drops the source. Lossy files are never re-encoded.
+VBR, 48 kHz). Lossy files are never re-encoded. Originals are removed only with
+`--move` or `--cleanup`, after a successful import.
 
 **Fetch timeout.** The wait window is
 `fetch_timeout_base_secs + fetch_timeout_per_mb_secs × MB + fetch_timeout_per_file_secs × files`,
@@ -103,17 +103,25 @@ search).
 
 Import does, in order:
 
-1. Strip junk tags and apply the `[quality]` policy to lossless files.
-2. Match files to the release's tracks (Hungarian assignment over title,
+1. Resolve release metadata and validate manual overrides.
+2. Prepare temporary copies, strip junk tags, and apply the `[quality]` policy.
+3. Match files to the release's tracks (Hungarian assignment over title,
    duration, artist, track number, and recording MBID); unmatched files block
    the import. `--force <mapping.json>` bypasses matching.
-3. Write a fresh tag set, including the release group's top-voted MusicBrainz
+4. Write a fresh tag set, including the release group's top-voted MusicBrainz
    genres.
-4. Copy (or `--move`) into
+5. Publish into
    `<library>/<Artist>/<Album> (<Year>)/<NN> - <Title>.<ext>`, with a
    `<DD>-` disc prefix on multi-disc releases.
-5. Optionally embed cover art and, with `--cleanup`, delete the imported
-   sources.
+6. Commit library records, then delete sources only with `--move` or `--cleanup`.
+
+Original files remain untouched during preparation and matching. Publication
+uses temporary files, collision checks, and rollback on handled failures.
+Interrupted operations retain a `.mimport-operation-*.json` recovery manifest
+under the library root; filesystem changes and SQLite commits are not one atomic
+transaction. Cover art is embedded before publication when requested.
+
+The command examples below omit the `uv run` prefix for readability.
 
 ## Commands
 
@@ -155,6 +163,7 @@ mimport library list [<query>...]
 mimport library show <id>
 mimport library edit <id> [--rename] [--dry-run] <field=value>...
 mimport library remove [--files] [<query>...]
+mimport library prune [--dry-run]
 mimport cover [<query>...] [--fetch]
 
 mimport yt fetch <url> [--title <t>] [--artist <a>] [--album <a>]
@@ -230,6 +239,9 @@ fails unless `--allow-native` is passed.
 with yt-dlp, and tags it either from flags/`--tags` or by backfilling from a
 MusicBrainz release (`--release <mbid> --track <n>`). The source URL is stored
 in a `SOURCEURL` tag and indexed in the library.
+
+`--dry-run` obtains metadata only: no media or thumbnails are downloaded, no tags
+are written, and the library and database are unchanged.
 
 [slskd]: https://github.com/slskd/slskd
 [yt-dlp]: https://github.com/yt-dlp/yt-dlp
